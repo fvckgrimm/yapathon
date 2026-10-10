@@ -147,8 +147,12 @@ function onFrame(frame) {
 
   if (topic === 'channel.session.update') {
     counts.sessionUpdates += 1;
-    const mark = record(topic, data.key, data.data ?? {}, data);
-    log(`  session    ${String(data.key).padEnd(28)} ${data.provider ?? '?'}  ${mark}`);
+    // The docs say `data.key` and `data.name` are the same value. They are not
+    // both present: a real payload carries only `name`, so reading `key` alone
+    // labels every session frame "undefined". Falls back to whichever is there.
+    const key = data.key ?? data.name ?? '(no key)';
+    const mark = record(topic, key, data.data ?? {}, data);
+    log(`  session    ${String(key).padEnd(28)} ${data.provider ?? '?'}  ${mark}`);
     return;
   }
 

@@ -133,6 +133,34 @@ integration we already need.
 This is the cleanest answer to "make `!yap` work everywhere": it comes from the
 same credential that makes the events work.
 
+## StreamElements — measured, not assumed
+
+Originally this section said StreamElements tips meant an undocumented REST poll,
+which was wrong: StreamElements publishes an official WebSocket gateway
+("Astro") at `wss://astro.streamelements.com/`, authenticated by a JWT copied
+from their dashboard. No OAuth, no Cloud project, no quota, and no OBS source —
+it is a socket from our process, not a hosted widget.
+
+`tools/astro-probe` measured it. **The amounts are present**, on
+`channel.activities`, in a nested `data.data` the topic page does not document:
+
+| activity | `data.data` |
+| --- | --- |
+| `cheer` | `amount` = bits |
+| `raid` / `host` | `amount` = viewers |
+| `superchat` | `amount` = money (currency not on this topic) |
+| `communityGiftPurchase` | `amount` = count of gifted subs |
+| `subscriber` / `sponsor` | `amount` = months, plus `tier` |
+
+So the gateway can price events proportionally, exactly as the native APIs can,
+and it covers twitch, youtube and kick on one connection with no quota ceiling —
+which the native YouTube path very much does have.
+
+What remains unproven: every event in the test dump was `isMock: true`, so the
+schema is confirmed but real traffic is not; and no YouTube event was captured,
+so the one thing native YouTube *cannot* do — subscriber notifications — is
+still unverified.
+
 ## StreamElements tips
 
 The honest version: this is a smaller deal than it looks, and it is worth

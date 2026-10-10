@@ -75,6 +75,40 @@ Also worth timing: **leave it connected a week** and see whether the JWT still
 works. A credential that rots is the same "worked until it quietly didn't"
 failure this project has hit six times already.
 
+## What the probe found (2026-10-10)
+
+Answer: **yes, the amounts are there.** On `channel.activities`, nested one level
+deeper than the topic page documents — in `data.data`:
+
+| activity | `data.data` carries |
+| --- | --- |
+| `cheer` | `amount` = **bits** (1000, 5000), `message` |
+| `raid` | `amount` = **viewers** |
+| `tip` | `amount` = money. **No currency on this topic.** |
+| `communityGiftPurchase` | `amount` = **count of gifted subs** |
+| `subscriber` | `amount` = **months**, `tier`, plus `gifted`/`sender` |
+| `follow` | nothing — correct, a follow is flat |
+
+`channel.session.update` carries the same values under Session Data Reference key
+names. It is redundant with `activities` for our purposes, except that it is the
+topic the docs are actually accurate about.
+
+**Three corrections to StreamElements' own documentation**, all found by this:
+
+- The `channel.activities` topic page lists only `username`, `displayName`,
+  `providerId` and `avatar`. It omits `amount`, `tier`, `gifted`, `sender` and
+  `message`, which are all present.
+- The `channel.session.update` page says `data.key` and `data.name` are "the same
+  value". A real payload carries **only `name`**. Reading `data.key` labels every
+  session frame `undefined`.
+- `channel.activities` does not document an `activityGroup`, which exists and is
+  how gift-bomb members are grouped, nor `activityId`/`_id`, which are the
+  dedup keys.
+
+Still unproven: **every event in the test dump was `isMock: true`** — StreamElements'
+own test events, not real viewer activity. The schema is confirmed; real traffic
+is not. And no YouTube events were captured, so the subscriber question stands.
+
 ## Notes
 
 - Only **public** YouTube livestreams are supported by StreamElements.

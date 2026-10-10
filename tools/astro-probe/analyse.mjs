@@ -70,7 +70,14 @@ const SESSION_ALIAS = {
 function activityFor(kind) {
   const base = kind.split('/')[0];
   const stripped = base.replace(/-(latest|recent)$/, '');
-  return SESSION_ALIAS[stripped.toLowerCase()] ?? base;
+
+  // Alias first — `subscriber-gifted-latest` means a gift bomb, not a sub — then
+  // the stripped name itself, so `communityGiftPurchase-latest` resolves without
+  // needing an alias entry for every activity type that already exists.
+  return (
+    SESSION_ALIAS[stripped.toLowerCase()] ??
+    (NEEDED[stripped] ? stripped : base)
+  );
 }
 
 const SIZE_KEY = /^(amount|bits|amountmicros|amountdisplaystring|price|value|count|viewers|viewercount|giftcount|month|months|tier)$/i;
@@ -107,7 +114,9 @@ function classify(file) {
       kind = `${data.type}/${data.provider}`;
       payload = data;
     } else if (topic === 'channel.session.update') {
-      kind = `${data.key}/${data.provider ?? '?'}`;
+      // Only `name` is present in real payloads, despite the docs listing both.
+      const key = data.key ?? data.name ?? '(no key)';
+      kind = `${key}/${data.provider ?? '?'}`;
       payload = data.data ?? {};
     } else if (topic === 'channel.tips') {
       kind = `tip/${data.provider}`;
