@@ -362,25 +362,32 @@ pub const SETTINGS_SECTIONS: &[Section] = &[
 
 /// StreamElements Astro — a third option, alongside Twitch and YouTube.
 ///
-/// Its own section because it is not a Twitch setting and not a YouTube one,
-/// and because the token is a list: one per platform account.
+/// One field per platform rather than a list in one field, because one token
+/// really does belong to one platform account and that is the axis a streamer
+/// thinks in. A comma-separated list of opaque strings is worse for a technical
+/// user than a plain field and considerably worse for anyone else.
+///
+/// Adding a platform is a line here and a line in [`credential_entry`], which
+/// is the same bargain every other setting in this schema makes.
 const ASTRO: &[Field] = &[
     Field {
-        key: "astro_credential",
-        label: "Token location",
-        kind: FieldKind::Text,
-        options: &[],
-        help: Some("a keyring entry name, not the tokens themselves"),
-    },
-    Field {
-        key: "astro_token",
-        label: "StreamElements tokens",
+        key: "astro_youtube_token",
+        label: "YouTube account",
         kind: FieldKind::Secret,
         options: &[],
         help: Some(
-            "one per platform account, comma separated. Copy each from the \
-             StreamElements dashboard while switched to that account — a token \
-             only sees its own platform. Empty means Astro is not used at all",
+            "StreamElements dashboard, switched to the YouTube account, copy the JWT. \
+             Empty means that platform is not used",
+        ),
+    },
+    Field {
+        key: "astro_twitch_token",
+        label: "Twitch account",
+        kind: FieldKind::Secret,
+        options: &[],
+        help: Some(
+            "StreamElements dashboard, switched to the Twitch account, copy the JWT. \
+             Empty means that platform is not used",
         ),
     },
 ];
@@ -419,14 +426,9 @@ pub fn credential_entry(
             .twitch_credential
             .clone()
             .unwrap_or_else(|| yap_core::settings::credential_name("twitch")),
-        "astro_credential" => settings
-            .astro_credential
-            .clone()
-            .unwrap_or_else(|| yap_core::settings::credential_name("astro")),
-        "astro_token" => settings
-            .astro_credential
-            .clone()
-            .unwrap_or_else(|| yap_core::settings::credential_name("astro")),
+        "astro_youtube_token" | "astro_twitch_token" => {
+            yap_core::settings::credential_name("astro")
+        }
         "groq_key" => match &settings.engine {
             yap_core::settings::EngineChoice::Groq { credential } => credential.clone(),
             // The engine is local, but the key is still worth keeping — a
@@ -444,9 +446,10 @@ pub fn credential_entry(
         service,
         match field.key {
             "groq_key" => "api-key",
-            // A JWT, and several of them in one entry: a keyring entry holds one
-            // value and a cross-streaming streamer has more than one token.
-            "astro_token" => "jwt",
+            // One entry per platform, so clearing one account's token leaves
+            // the other's alone — and so the panel can show whether each is set.
+            "astro_youtube_token" => "youtube",
+            "astro_twitch_token" => "twitch",
             _ => "user-token",
         },
     ))

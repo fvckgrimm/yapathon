@@ -507,10 +507,16 @@ It is genuinely good at one thing neither native API can do: it reports
 for anywhere. Native YouTube gives memberships, Super Chats and member messages;
 it cannot tell you who pressed Subscribe.
 
-Settings → Astro → StreamElements tokens, one per platform account, comma
-separated. A token only ever sees its own platform, and copying it while
-switched to a different account changes which room it subscribes to — so a
-cross-streaming streamer wants one for Twitch and one for YouTube.
+Settings → Astro, one field per platform: **YouTube account** and **Twitch
+account**. Copy each JWT from the StreamElements dashboard while switched to that
+account, and leave the other empty. Each is its own keyring entry, so the panel
+says whether each is set and clearing one leaves the other alone.
+
+The label is only organisation. A token does not say which platform it covers
+and nothing checks, so a token saved in the wrong slot still works — every event
+carries its own `provider`, which is what decides how it is priced. The log
+names the platform that actually arrived, so a mistake is visible rather than
+silent.
 
 Prices are shared with the native path: Astro names events `<platform>:<kind>`
 the same way EventSub does, so `twitch:cheer` means the same thing either way

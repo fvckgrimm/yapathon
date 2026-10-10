@@ -289,6 +289,28 @@ fn prices_the_streamer_already_set_are_reused_rather_than_invented() {
 }
 
 #[test]
+fn the_platform_comes_from_the_event_and_not_from_where_the_token_was_saved() {
+    // The settings panel offers one slot per platform, which is the axis a
+    // streamer thinks in. But a token does not say which platform it covers and
+    // nothing checks, so a token saved in the wrong slot must still be priced
+    // under the platform its events actually name — otherwise the event is
+    // counted and `youtube:superchat` finds no price for it, and the goal
+    // silently stops responding to chat.
+    let frame = r#"{"type":"message","topic":"channel.activities",
+      "data":{"type":"superchat","provider":"youtube",
+        "data":{"displayName":"Viewer","amount":5}}}"#;
+
+    let event = event_from(frame).expect("priced");
+
+    assert_eq!(
+        event.platform, "youtube",
+        "a YouTube event is priced as YouTube whatever slot its token sits in",
+    );
+    assert_eq!(event.kind, "superchat");
+    assert_eq!(event.words, Some(50), "5 units of money × 10 words each");
+}
+
+#[test]
 fn an_activity_delivered_twice_is_counted_once() {
     // A reconnect, or a publisher retrying a delivery, would otherwise let a
     // cheer through twice. A counter that is occasionally wrong is worse than

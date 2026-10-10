@@ -164,6 +164,12 @@ impl AstroPlatform {
 
         let mut subscribed = false;
         let mut nonce = 0u32;
+        // Which platform this account's events actually arrive from, once known.
+        // Not the label the account was configured under: the token does not say
+        // which platform it covers and nothing checks, so this is how a token
+        // saved in the wrong slot announces itself rather than being silently
+        // miscounted.
+        let mut seen_provider: Option<String> = None;
 
         while let Some(message) = socket.next().await {
             let text = match message? {
@@ -254,6 +260,22 @@ impl AstroPlatform {
                             activity.data.user()
                         );
                         continue;
+                    }
+
+                    if seen_provider.as_deref() != Some(activity.provider) {
+                        if seen_provider.is_some() {
+                            log::warn!(
+                                "astro: the {} account is also reporting {} events",
+                                account.label,
+                                activity.provider
+                            );
+                        }
+                        log::info!(
+                            "astro: {} is receiving {} events",
+                            account.label,
+                            activity.provider
+                        );
+                        seen_provider = Some(activity.provider.to_string());
                     }
 
                     if self.already_seen(&activity) {

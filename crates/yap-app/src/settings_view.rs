@@ -185,10 +185,6 @@ fn field_value(settings: &yap_core::settings::Settings, field: &Field) -> String
         "event_chat_command" => words_for(settings, "chat:command"),
         "twitch_channel" => settings.twitch_channel.clone().unwrap_or_default(),
         "twitch_client_id" => settings.twitch_client_id.clone().unwrap_or_default(),
-        "astro_credential" => settings
-            .astro_credential
-            .clone()
-            .unwrap_or_else(|| yap_core::settings::credential_name("astro")),
         "twitch_credential" => settings
             .twitch_credential
             .clone()
@@ -1064,12 +1060,9 @@ fn apply_field(settings: &mut yap_core::settings::Settings, field: &Field, raw: 
         // Assigned rather than parsed: an empty value is the system default and
         // has to survive, so there is nothing here that can fail.
         "input_device" => settings.input_device = trimmed.to_string(),
-        "astro_credential" => {
-            settings.astro_credential = (!trimmed.is_empty()).then(|| trimmed.to_string());
-        }
-        // The tokens themselves are in the keyring, not here. Deliberately a
-        // no-op, like every other credential: `settings.toml` is the file that
-        // gets synced, backed up and pasted into support threads.
+        // The Astro tokens are in the keyring, not here. Deliberately a no-op,
+        // like every other credential: `settings.toml` is the file that gets
+        // synced, backed up and pasted into support threads.
         // An empty box means "worth nothing", not "leave it alone". A streamer
         // who blanks a price means to stop that event extending the goal, and
         // silently keeping the old value would leave chat able to move a number
@@ -1115,7 +1108,7 @@ fn apply_field(settings: &mut yap_core::settings::Settings, field: &Field, raw: 
         // Secrets live in the OS credential store and are deliberately not
         // written here. Claimed so a secret is not mistaken for a forgotten
         // field.
-        "groq_key" | "twitch_token" | "astro_token" => {}
+        "groq_key" | "twitch_token" | "astro_youtube_token" | "astro_twitch_token" => {}
         "model_path" => {
             if !trimmed.is_empty() {
                 if let yap_core::settings::EngineChoice::Local { model_path, .. } =

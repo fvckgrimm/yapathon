@@ -246,7 +246,7 @@ fn start_twitch(hub: &Hub) {
 /// One connection per token, because a token is scoped to one platform account
 /// and a cross-streaming streamer has more than one.
 fn start_astro(hub: &Hub) {
-    let accounts = astro_accounts(hub.settings());
+    let accounts = astro_accounts();
     if accounts.is_empty() {
         return;
     }
@@ -271,40 +271,43 @@ fn start_astro(hub: &Hub) {
     });
 }
 
-/// The Astro accounts, from the credential store.
+/// The Astro accounts configured, from the credential store.
 ///
-/// Empty means Astro is switched off, which is the default and the point: it
-/// puts a third party between the streamer and their events, so it is a choice.
+/// One per platform, each in its own keyring entry, so the panel can say
+/// whether each is set and clearing one leaves the other alone.
 ///
-/// Comma-separated, trimmed, and empty entries dropped — so pasting a token with
-/// a trailing comma, which is what every terminal history and every "copy" menu
-/// eventually produces, connects one account rather than two, the second of
-/// which would fail auth and retry for the rest of the stream.
-pub fn astro_accounts(settings: &yap_core::settings::Settings) -> Vec<AstroAccount> {
-    let service = settings
-        .astro_credential
-        .clone()
-        .unwrap_or_else(|| yap_core::settings::credential_name("astro"));
+/// Missing means Astro is not used, which is the default and the point: it puts
+/// a third party between the streamer and their events, so it is a choice.
+///
+/// The platform a token covers is **not** read from the settings — it comes from
+/// every event's `provider` field. Putting a token in the wrong slot therefore
+/// costs nothing but a misleading label; the log says which platform actually
+/// arrived, so a mistake is visible rather than silent.
+pub fn astro_accounts() -> Vec<AstroAccount> {
+    let mut accounts = Vec::new();
+    let service = yap_core::settings::credential_name("astro");
 
     // A missing keyring is not an error. It means this machine cannot store a
     // credential, so there is nothing to connect with — the same reasoning that
     // stops the settings panel offering to accept a token it cannot keep.
-    let Ok(Some(stored)) = yap_core::secrets::get(&service, "jwt") else {
-        return Vec::new();
-    };
+    for (platform, label) in [("youtube", "YouTube"), ("twitch", "Twitch")] {
+        // No token means that platform is simply not used.
+        let Ok(Some(token)) = yap_core::secrets::get(&service, platform) else {
+            continue;
+        };
 
-    stored
-        .split(',')
-        .map(str::trim)
-        .filter(|token| !token.is_empty())
-        .enumerate()
-        .map(|(index, token)| AstroAccount {
+        let token = token.trim();
+        if token.is_empty() {
+            continue;
+        }
+
+        accounts.push(AstroAccount {
             token: token.to_string(),
-            // Named by position rather than by platform, because the token does
-            // not say which platform it covers and guessing would be wrong.
-            label: format!("account {}", index + 1),
-        })
-        .collect()
+            label: label.to_string(),
+        });
+    }
+
+    accounts
 }
 
 /// The pricing Twitch events are awarded with.
