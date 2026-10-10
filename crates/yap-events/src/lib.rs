@@ -21,6 +21,7 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use yap_core::goal::Event;
 
+pub mod astro;
 pub mod twitch;
 
 pub use twitch::{TwitchPlatform, TwitchPricing};

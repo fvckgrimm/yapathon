@@ -11,6 +11,7 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use gpui::px;
 use yap_core::settings::Settings;
+use yap_events::astro::{AstroAccount, AstroPlatform};
 use yap_events::{ChatPlatform, EventSink, TwitchPlatform, TwitchPricing};
 use yap_server::AppState;
 use yap_voice::pipeline::{Listener, WordSink};
@@ -79,6 +80,7 @@ pub fn open_main_window(
     // fail keeps the app from appearing.
     start_listening(&hub);
     start_twitch(&hub);
+    start_astro(&hub);
 
     Ok(())
 }
@@ -233,6 +235,76 @@ fn start_twitch(hub: &Hub) {
             hub.report(ModelMessage::Warning(format!("twitch stopped: {error:#}")));
         }
     });
+}
+
+/// Start StreamElements Astro, if a token is configured.
+///
+/// Off unless a token is present. That is the whole point of it being
+/// opt-in: it puts a third party between the streamer and their events, which
+/// is a trade rather than a free win, and the streamer should make it.
+///
+/// One connection per token, because a token is scoped to one platform account
+/// and a cross-streaming streamer has more than one.
+fn start_astro(hub: &Hub) {
+    let accounts = astro_accounts(hub.settings());
+    if accounts.is_empty() {
+        return;
+    }
+
+    // Astro names events `<platform>:<kind>`, the same shape EventSub uses, so
+    // the prices a streamer already set carry over rather than silently
+    // re-pricing itself to nothing on the day they switch.
+    let mut pricing = std::collections::BTreeMap::new();
+    for platform in ["twitch", "youtube", "kick"] {
+        pricing.extend(hub.settings().pricing_for(platform));
+    }
+
+    let platform = AstroPlatform::new(accounts, pricing);
+
+    let sink: Arc<dyn EventSink> = Arc::new(StateEventSink { hub: hub.clone() });
+
+    runtime::spawn(async move {
+        log::info!("astro: connecting");
+        if let Err(error) = platform.run(sink).await {
+            log::warn!("astro stopped: {error:#}");
+        }
+    });
+}
+
+/// The Astro accounts, from the credential store.
+///
+/// Empty means Astro is switched off, which is the default and the point: it
+/// puts a third party between the streamer and their events, so it is a choice.
+///
+/// Comma-separated, trimmed, and empty entries dropped — so pasting a token with
+/// a trailing comma, which is what every terminal history and every "copy" menu
+/// eventually produces, connects one account rather than two, the second of
+/// which would fail auth and retry for the rest of the stream.
+pub fn astro_accounts(settings: &yap_core::settings::Settings) -> Vec<AstroAccount> {
+    let service = settings
+        .astro_credential
+        .clone()
+        .unwrap_or_else(|| yap_core::settings::credential_name("astro"));
+
+    // A missing keyring is not an error. It means this machine cannot store a
+    // credential, so there is nothing to connect with — the same reasoning that
+    // stops the settings panel offering to accept a token it cannot keep.
+    let Ok(Some(stored)) = yap_core::secrets::get(&service, "jwt") else {
+        return Vec::new();
+    };
+
+    stored
+        .split(',')
+        .map(str::trim)
+        .filter(|token| !token.is_empty())
+        .enumerate()
+        .map(|(index, token)| AstroAccount {
+            token: token.to_string(),
+            // Named by position rather than by platform, because the token does
+            // not say which platform it covers and guessing would be wrong.
+            label: format!("account {}", index + 1),
+        })
+        .collect()
 }
 
 /// The pricing Twitch events are awarded with.

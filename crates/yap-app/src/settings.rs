@@ -347,12 +347,41 @@ pub const SETTINGS_SECTIONS: &[Section] = &[
         fields: VOICE,
     },
     Section {
+        title: "Astro",
+        fields: ASTRO,
+    },
+    Section {
         title: "Twitch",
         fields: TWITCH,
     },
     Section {
         title: "Server",
         fields: SERVER,
+    },
+];
+
+/// StreamElements Astro — a third option, alongside Twitch and YouTube.
+///
+/// Its own section because it is not a Twitch setting and not a YouTube one,
+/// and because the token is a list: one per platform account.
+const ASTRO: &[Field] = &[
+    Field {
+        key: "astro_credential",
+        label: "Token location",
+        kind: FieldKind::Text,
+        options: &[],
+        help: Some("a keyring entry name, not the tokens themselves"),
+    },
+    Field {
+        key: "astro_token",
+        label: "StreamElements tokens",
+        kind: FieldKind::Secret,
+        options: &[],
+        help: Some(
+            "one per platform account, comma separated. Copy each from the \
+             StreamElements dashboard while switched to that account — a token \
+             only sees its own platform. Empty means Astro is not used at all",
+        ),
     },
 ];
 
@@ -390,6 +419,14 @@ pub fn credential_entry(
             .twitch_credential
             .clone()
             .unwrap_or_else(|| yap_core::settings::credential_name("twitch")),
+        "astro_credential" => settings
+            .astro_credential
+            .clone()
+            .unwrap_or_else(|| yap_core::settings::credential_name("astro")),
+        "astro_token" => settings
+            .astro_credential
+            .clone()
+            .unwrap_or_else(|| yap_core::settings::credential_name("astro")),
         "groq_key" => match &settings.engine {
             yap_core::settings::EngineChoice::Groq { credential } => credential.clone(),
             // The engine is local, but the key is still worth keeping — a
@@ -407,6 +444,9 @@ pub fn credential_entry(
         service,
         match field.key {
             "groq_key" => "api-key",
+            // A JWT, and several of them in one entry: a keyring entry holds one
+            // value and a cross-streaming streamer has more than one token.
+            "astro_token" => "jwt",
             _ => "user-token",
         },
     ))

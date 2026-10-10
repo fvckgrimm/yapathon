@@ -207,6 +207,30 @@ kind, with gifted variants branching off their non-gifted counterparts, and a
 flat `timerChatTipWorth` applied to both cheers and Super Chats. Our version
 generalises that into one rule, which is why the table above needs no new code.
 
+## Built: Astro as a third platform
+
+`crates/yap-events/src/astro.rs`, off by default, alongside rather than instead
+of both native paths. Configured in Settings → Astro; one token per platform
+account; prices shared with EventSub because both name events
+`<platform>:<kind>`.
+
+Two things the implementation learned from the captured frames rather than the
+documentation:
+
+- **Every size is nested.** `amount` lives in `frame.data.data`, not in
+  `frame.data`. Their topic page lists only the outer fields, so a mapping
+  written from the docs finds `None` and prices every Super Chat as a flat grant
+  — while passing a test written against the same wrong assumption. Four tests
+  fail if the nested read is removed.
+- **`isMock` needs an explicit rename.** Serde maps `is_mock` to a field called
+  `is_mock`; the payload spells it `isMock`; `#[serde(default)]` then supplies
+  `false` silently, with no error, so every simulated cheer counts as though a
+  viewer sent it.
+
+Also: activities are deduplicated by `activityId`, and `amount` on a merch
+activity is the number of line items, not money — the money is
+`sum(price * quantity)` across `items`.
+
 ## Implementation
 
 New files, all inside `yap-events`:

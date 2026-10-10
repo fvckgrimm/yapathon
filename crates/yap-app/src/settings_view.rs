@@ -185,6 +185,10 @@ fn field_value(settings: &yap_core::settings::Settings, field: &Field) -> String
         "event_chat_command" => words_for(settings, "chat:command"),
         "twitch_channel" => settings.twitch_channel.clone().unwrap_or_default(),
         "twitch_client_id" => settings.twitch_client_id.clone().unwrap_or_default(),
+        "astro_credential" => settings
+            .astro_credential
+            .clone()
+            .unwrap_or_else(|| yap_core::settings::credential_name("astro")),
         "twitch_credential" => settings
             .twitch_credential
             .clone()
@@ -1060,6 +1064,12 @@ fn apply_field(settings: &mut yap_core::settings::Settings, field: &Field, raw: 
         // Assigned rather than parsed: an empty value is the system default and
         // has to survive, so there is nothing here that can fail.
         "input_device" => settings.input_device = trimmed.to_string(),
+        "astro_credential" => {
+            settings.astro_credential = (!trimmed.is_empty()).then(|| trimmed.to_string());
+        }
+        // The tokens themselves are in the keyring, not here. Deliberately a
+        // no-op, like every other credential: `settings.toml` is the file that
+        // gets synced, backed up and pasted into support threads.
         // An empty box means "worth nothing", not "leave it alone". A streamer
         // who blanks a price means to stop that event extending the goal, and
         // silently keeping the old value would leave chat able to move a number
@@ -1105,7 +1115,7 @@ fn apply_field(settings: &mut yap_core::settings::Settings, field: &Field, raw: 
         // Secrets live in the OS credential store and are deliberately not
         // written here. Claimed so a secret is not mistaken for a forgotten
         // field.
-        "groq_key" | "twitch_token" => {}
+        "groq_key" | "twitch_token" | "astro_token" => {}
         "model_path" => {
             if !trimmed.is_empty() {
                 if let yap_core::settings::EngineChoice::Local { model_path, .. } =
@@ -2378,34 +2388,39 @@ mod tests {
     }
 
     #[test]
-    fn every_credential_field_has_an_entry_the_engines_also_agree_on() {
-        // The `user` half is fixed per credential and is what separates a Twitch
-        // token from a Groq key stored under a similar-looking service. If a new
-        // credential field reused another one's user, clearing one would take
-        // the other with it.
-        use std::collections::BTreeMap;
-
+    fn no_two_credentials_share_a_keyring_entry() {
+        // The invariant, rather than a list of known keys: clearing one
+        // credential must not clear another. Two fields that resolve to the same
+        // `(service, user)` pair would share one value, so replacing the Twitch
+        // token would also replace the Groq key and nothing would say so.
+        //
+        // Written this way rather than as an allowlist of known fields, because
+        // an allowlist passes the moment a credential is added that nobody
+        // thought about — which is exactly how this test would have missed the
+        // Astro tokens when they first went in as a settings-file field.
         let settings = Settings::default();
-        let mut by_user: BTreeMap<&'static str, Vec<&str>> = BTreeMap::new();
+        let mut claimed: std::collections::BTreeMap<(String, &'static str), Vec<&str>> =
+            std::collections::BTreeMap::new();
 
         for section in SETTINGS_SECTIONS {
             for field in section.fields {
-                if let Some((_, user)) = crate::settings::credential_entry(&settings, field) {
-                    by_user.entry(user).or_default().push(field.key);
+                if let Some((service, user)) = crate::settings::credential_entry(&settings, field) {
+                    claimed.entry((service, user)).or_default().push(field.key);
                 }
             }
         }
 
         assert!(
-            !by_user.is_empty(),
-            "no credential field resolved to an entry, so nothing above was checked",
+            claimed.len() >= 3,
+            "expected the Twitch, speech and StreamElements credentials, found {:?}",
+            claimed.keys().collect::<Vec<_>>(),
         );
 
-        for (user, keys) in &by_user {
-            assert!(
-                keys.iter()
-                    .all(|k| *k == "twitch_token" || *k == "groq_key"),
-                "the entry {user:?} is claimed by {keys:?}, which the engines do not know",
+        for (entry, fields) in claimed {
+            assert_eq!(
+                fields.len(),
+                1,
+                "{entry:?} is claimed by {fields:?}, so clearing one clears them all",
             );
         }
     }

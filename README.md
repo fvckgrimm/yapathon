@@ -492,6 +492,41 @@ twitch_client_id = "your_app_id"
 Without any of this, chat commands still work and a yapathon is still playable —
 which is also the fastest way to try it.
 
+### StreamElements Astro — an alternative to talking to platforms directly
+
+A third option, **off by default**, alongside Twitch and YouTube rather than
+instead of either.
+
+[StreamElements' Astro gateway](https://docs.streamelements.com/websockets) is a
+WebSocket carrying twitch, youtube and kick on one connection, authenticated by
+a token copied from their dashboard. No OAuth, no Cloud project, no quota. It is
+a socket from this app, not a hosted overlay — nothing goes in OBS.
+
+It is genuinely good at one thing neither native API can do: it reports
+**YouTube channel subscribers**, which the Live Streaming API has no notification
+for anywhere. Native YouTube gives memberships, Super Chats and member messages;
+it cannot tell you who pressed Subscribe.
+
+Settings → Astro → StreamElements tokens, one per platform account, comma
+separated. A token only ever sees its own platform, and copying it while
+switched to a different account changes which room it subscribes to — so a
+cross-streaming streamer wants one for Twitch and one for YouTube.
+
+Prices are shared with the native path: Astro names events `<platform>:<kind>`
+the same way EventSub does, so `twitch:cheer` means the same thing either way
+and switching does not silently re-price everything to nothing.
+
+Two things it does not do, deliberately:
+
+- **No simulated events.** StreamElements' widget simulator marks its test
+  activity `isMock: true`, and counting it would let a cheer nobody sent move the
+  goal.
+- **No duplicate counting.** Activities are deduplicated by `activityId`, so a
+  reconnect cannot count one cheer twice.
+
+Still unverified against real traffic — everything measured so far came from the
+widget simulator. See [`tools/astro-probe`](tools/astro-probe/README.md).
+
 ### Chat commands
 
 Work with no credentials at all:

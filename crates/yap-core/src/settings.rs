@@ -176,6 +176,13 @@ pub struct Settings {
     pub twitch_channel: Option<String>,
     /// Name of the credential-store entry holding the Twitch user token.
     pub twitch_credential: Option<String>,
+    /// Name of the credential-store entry holding the StreamElements tokens.
+    ///
+    /// An entry name rather than the tokens, so `settings.toml` stays free of
+    /// secrets. One entry holds all of them comma-separated, because a keyring
+    /// entry is a single value and a streamer cross-streaming has more than one
+    /// token: each is copied from the dashboard while switched to its platform.
+    pub astro_credential: Option<String>,
     /// The registered Twitch application id.
     ///
     /// Public, and required by EventSub on the WebSocket URL itself, so a
@@ -227,6 +234,7 @@ impl Default for Settings {
             keep_transcript: true,
             twitch_channel: None,
             twitch_credential: Some(credential_name("twitch")),
+            astro_credential: Some(credential_name("astro")),
             twitch_client_id: None,
             youtube_poll_secs: 15,
         }
