@@ -1,0 +1,52 @@
+[package]
+name = "yap-app"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "The yap-a-thon desktop app"
+
+[[bin]]
+name = "yap-a-thon"
+path = "src/main.rs"
+
+[lib]
+name = "yap_app"
+path = "src/lib.rs"
+
+[dependencies]
+yap-core = { path = "../yap-core" }
+yap-voice = { path = "../yap-voice" }
+yap-events = { path = "../yap-events" }
+yap-server = { path = "../yap-server" }
+
+gpui-kit = { workspace = true }
+# GPUI's derive macros expand to absolute `::gpui::…` paths that do not resolve
+# through a facade re-export, so the app crate needs the snapshot directly. The
+# version must stay `=`-identical to gpui-kit's pin or the two become separate
+# crates that cannot see each other's types.
+gpui = { package = "gpui-pre", version = "=0.3.7" }
+
+anyhow.workspace = true
+thiserror.workspace = true
+log.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tokio.workspace = true
+async-channel.workspace = true
+futures-util.workspace = true
+parking_lot.workspace = true
+directories.workspace = true
+rfd.workspace = true
+async-trait = "0.1"
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["rt", "macros", "time"] }
+# `test-support` is what makes `#[gpui_kit::test]` and `TestWindowExt::click`
+# available: it renders real views into headless windows and dispatches real
+# pointer events, so a control being *reachable* is checked by clicking it
+# rather than by looking at it.
+gpui-kit = { workspace = true, features = ["test-support"] }
+
+[lints]
+workspace = true

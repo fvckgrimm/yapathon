@@ -1,0 +1,81 @@
+[workspace]
+resolver = "2"
+members = ["crates/*"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
+license = "MIT"
+
+[workspace.dependencies]
+# --- GPUI -------------------------------------------------------------------
+#
+# `gpui-kit` re-exports GPUI, so `use gpui_kit::*` IS GPUI. The `=` is
+# load-bearing: written as `gpui-kit = "0.7.0"` cargo resolves to 0.7.1 and
+# pulls a different `gpui-pre` snapshot, which puts two incompatible type
+# universes in one tree. gpui-kit pins gpui-pre =0.3.7 upstream; bumping either
+# requires bumping the other in the same commit.
+gpui-kit = "=0.7.0"
+
+# The same gpui-pre snapshot under the plain `gpui` name. GPUI's derive macros
+# expand to absolute `::gpui::…` paths that do not resolve through a facade
+# re-export, so the app crate needs it directly.
+gpui = { package = "gpui-pre", version = "=0.3.7" }
+
+# --- Shared application dependencies ---------------------------------------
+anyhow = "1"
+thiserror = "2"
+log = "0.4"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+toml = "0.9"
+directories = "6"
+# The native file chooser, so the model can be picked rather than typed as an
+# absolute path. `xdg-portal` on Linux rather than the GTK3 backend: the portal
+# is the supported path on a Wayland desktop, and it needs no GTK development
+# packages to build against, which keeps the build to `cargo build`.
+rfd = { version = "0.17", default-features = false, features = ["xdg-portal"] }
+parking_lot = "0.12"
+uuid = { version = "1", features = ["v4", "serde"] }
+
+# --- Async runtime ----------------------------------------------------------
+# The audio capture, the ASR engine and the Twitch socket all run on tokio.
+# `rt-multi-thread` is required: transcription is a long blocking C call and
+# must not stall the runtime the WebSocket lives on.
+tokio = { version = "1", features = ["rt-multi-thread", "sync", "time", "macros"] }
+# The GPUI thread receives from this, and GPUI's executor is not tokio's, so a
+# tokio channel's `recv` would panic there for the same reason `reqwest` panics
+# without a reactor.
+async-channel = "2"
+tokio-tungstenite = "0.24"
+futures-util = { version = "0.3", default-features = false, features = ["std"] }
+reqwest = { version = "0.12", default-features = false, features = [
+    "json",
+    "rustls-tls",
+    "multipart",
+] }
+axum = { version = "0.8", features = ["ws"] }
+
+# --- Audio and ASR ----------------------------------------------------------
+# cpal for microphone capture: one API across WASAPI, CoreAudio, ALSA and
+# PulseAudio/PipeWire.
+cpal = "0.18"
+
+# whisper-rs vendored, not a git dependency, so a build is reproducible from
+# the lockfile alone.
+whisper-rs = "0.16"
+
+# API keys go in the OS credential store, never in the settings file.
+keyring = { version = "3", features = ["apple-native", "windows-native", "sync-secret-service"] }
+
+[workspace.lints.rust]
+dead_code = "warn"
+
+[workspace.lints.clippy]
+all = { level = "warn", priority = -1 }
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = true

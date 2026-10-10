@@ -1,0 +1,21 @@
+[package]
+name = "yap-core"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Word counting, goal math and session state for yap-a-thon"
+
+[dependencies]
+anyhow.workspace = true
+thiserror.workspace = true
+log.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+toml.workspace = true
+uuid.workspace = true
+directories.workspace = true
+async-trait = "0.1"
+
+[lints]
+workspace = true

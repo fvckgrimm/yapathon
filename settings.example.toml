@@ -1,0 +1,211 @@
+# yap-a-thon example settings
+#
+# Every key the app understands, with its default, and why the debatable ones
+# are what they are.
+#
+# The app creates this file for you with the values below on first launch, so
+# you can just edit the one in your config directory:
+#
+#   ~/.config/yap-a-thon/settings.toml
+#
+# It is also looked for next to the executable, which is checked first — so a
+# portable install keeps its settings with the binary. Which one is in use is
+# printed at the top of the Settings tab and logged at startup.
+#
+# The Settings tab edits this same file, and it will not let you write a value
+# the app cannot read back. Prefer the tab.
+
+# --- Server ----------------------------------------------------------------
+#
+# OBS points at http://<bind_address>:<port>/overlay. The Run tab has the URL and
+# copies it when you click it.
+#
+# Keep this on 127.0.0.1 unless you know why not. The server publishes the
+# transcript and the goal with no authentication, because it has no network
+# exposure to authenticate for — which is only true while it stays on loopback.
+#
+# These two sit before every [table] on purpose: in TOML a bare key belongs to
+# the table above it, so at the bottom of the file they would land inside
+# [event_words] and the whole thing would fail to parse.
+bind_address = "127.0.0.1"
+port = 8973
+
+# --- Where to put the model ------------------------------------------------
+#
+# Download a ggml model and either leave this at the default and put the file in
+# the models directory, or point it anywhere on disk. The Engine section of the
+# settings tab lists everything it finds and has a file chooser for the rest.
+#
+#   https://huggingface.co/ggerganov/whisper.cpp/tree/main
+#
+# Sizes, and what they mean in practice:
+#
+#   ggml-tiny.en.bin       75 MB   Fastest. Rough enough to be embarrassing.
+#   ggml-small.en.bin     466 MB   English only. Runs fine on CPU. The
+#                                    sensible default.
+#   ggml-medium.en.bin   1.5 GB    English only, noticeably better. Wants a GPU.
+#   ggml-large-v3-turbo  1.6 GB   Multilingual, best accuracy. Wants a GPU.
+#
+# The `.en` models do English only. A multilingual model handles any language the
+# streamer speaks.
+#
+# A path that does not exist is replaced with one that does, and the app tells
+# you — it will not sit there failing to load a model you never chose.
+# The hard limit is what makes an extend run terminate. Without one a busy chat
+# makes the run unbounded; with one, reaching the cap ends the run and says so.
+default_hard_limit = 10000
+# On by default and worth stating plainly: this is a local record of what was
+# said. Turning it off keeps only the totals, which makes a disputed count
+# unanswerable.
+keep_transcript = true
+# Which microphone. Empty means the system default, which is right for almost
+# everyone. The Voice section of the settings tab lists every input the machine
+# can record from.
+#
+# Names are stored rather than indices: indices come from enumeration order, so
+# unplugging a device renumbers the rest and the file would quietly mean
+# something else.
+input_device = ""
+# The service name the Twitch token is stored under in the credential store.
+twitch_credential = "yap-a-thon/twitch"
+
+[engine]
+kind = "local"
+model_path = "/home/you/.local/share/yap-a-thon/models/ggml-small.en.bin"
+
+# Auto probes Metal, then CUDA, then Vulkan, then falls back to CPU.
+#
+# This is fixed at compile time by which features the binary was built with, so
+# changing it here does nothing unless you also rebuild:
+#
+#   cargo build --release --features yap-voice/whisper-metal
+#   cargo build --release --features yap-voice/whisper-cuda
+#   cargo build --release --features yap-voice/whisper-vulkan
+#
+# "cpu" always works and is fast enough for short, silence-delimited utterances.
+backend = "auto"
+
+# To use Groq's hosted whisper-large-v3-turbo instead. Same model as the local
+# large-v3-turbo, so counts stay comparable. About $0.04 per hour of audio.
+#
+# The key goes in the OS credential store, never in this file — this file gets
+# synced, backed up and pasted into support threads. Store it with:
+#
+#   keyctl store yap-a-thon/groq api-key < /path/to/key
+#
+# [engine]
+# kind = "groq"
+# credential = "yap-a-thon/groq"
+
+# --- The goal --------------------------------------------------------------
+#
+# The defaults for a new yapathon. The actual goal and limit for a run are set
+# from the start form in the app's Run tab, not from here.
+#
+#   kind = "extend"      chat moves the finish line — the classic yapathon
+#   kind = "fixed"       the goal never moves; events grant score only
+#   kind = "time"        the goal is a clock; events extend it
+#
+# The hard limit is what makes an extend run terminate. Without one a busy chat
+# makes the run unbounded; with one, reaching the cap ends the run and says so.
+
+# --- Counting rules --------------------------------------------------------
+#
+# Three of these have a defensible default and are on. They are the settings
+# people argue about, so each is a switch rather than a fixed rule.
+[rules]
+# "don't" is said as two words, so count it as two.
+expand_contractions = true
+
+# The recogniser emits "42"; you said "forty two". Counting the digit as one word
+# makes number-heavy speech score far below how it sounds.
+spell_out_numerals = true
+
+# Off by default: fillers are still tallied separately and shown as their own
+# stat. This is the "no ums" variant mode rather than the honest default.
+exclude_fillers = false
+
+# Only applies when spell_out_numerals is off.
+count_bare_numerals_as_words = false
+
+# What counts as a filler.
+fillers = ["um", "uh", "erm", "er", "ah", "hmm", "mhm"]
+
+# On by default and worth stating plainly: this is a local record of what was
+# said. Turning it off keeps only the totals, which makes a disputed count
+# unanswerable.
+
+# --- Voice -----------------------------------------------------------------
+#
+# Which microphone. Empty means the system default, which is right for almost
+# everyone. The Voice section of the settings tab lists every input the machine
+# can record from.
+#
+# Names are stored rather than indices: indices come from enumeration order, so
+# unplugging a device renumbers the rest and the file would quietly mean
+# something else.
+
+# How long a pause has to be before the next sentence starts a new count. Lower
+# splits sentences more often; too low and whisper transcribes fragments, then
+# completes them from its own guess, and the count drifts up.
+[vad]
+min_silence_ms = 500
+
+# Speech probability above which audio counts as speech. Lower hears more of the
+# room, including the fan.
+threshold = 0.5
+
+# How short a detected word is allowed to be and still count. Words shorter than
+# this are dropped, which is most of what stops "artifacts" scoring points.
+min_speech_ms = 200
+
+# The longest single utterance, after which one is force-cut. Without it a
+# continuous monologue becomes one transcript and nothing appears until it ends.
+max_speech_ms = 15000
+
+# Padding either side of a detected word. Too little clips consonants.
+speech_pad_ms = 200
+
+# A raw energy floor applied before any model runs. This is the first of two
+# guards against invented words: audio quieter than this never reaches the
+# recogniser at all.
+energy_floor = 0.008
+
+# --- What each chat event is worth -----------------------------------------
+#
+# Words granted, by event. This is the number chat moves the goal by.
+#
+# The two per-unit rows scale with the amount in the event. Twitch sends a gift
+# bomb as ONE notification carrying a quantity, and a cheer carries its bits:
+# pricing either flat makes a hundred gifted subs worth the same as one.
+#
+# Remove a key entirely to say that event is worth nothing. Leaving it out is
+# not the same as leaving it alone.
+[event_words]
+"twitch:sub" = 100
+"twitch:resub" = 100
+"twitch:gift_sub" = 50
+"twitch:cheer" = 1
+"twitch:raid" = 250
+"twitch:redemption" = 100
+"chat:command" = 100
+
+# --- Twitch ----------------------------------------------------------------
+#
+# All three are needed. A partial config is treated as no config rather than
+# half-working, because EventSub refuses the socket without a client id and
+# silently receives nothing without a token.
+#
+# 1. Register an application at https://dev.twitch.tv/console/apps
+# 2. Get a user access token with the channel scopes
+# 3. Store the token in the credential store under the service name below
+#
+# Without any of this, chat commands still work:
+#
+#   !yap start 5000
+#   !yap extend 500
+#   !yap pause
+#
+# channel = "your_login"
+# client_id = "your_registered_app_id"
+

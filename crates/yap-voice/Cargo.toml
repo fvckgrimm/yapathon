@@ -1,0 +1,44 @@
+[package]
+name = "yap-voice"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Microphone capture, voice activity detection and transcription engines"
+
+[dependencies]
+yap-core = { path = "../yap-core" }
+anyhow.workspace = true
+thiserror.workspace = true
+log.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tokio.workspace = true
+futures-util.workspace = true
+cpal.workspace = true
+keyring.workspace = true
+async-trait = "0.1"
+
+# Local whisper.cpp. `whisper-rs` pulls in a vendored copy of the C library and
+# compiles it, which is slow but means no system dependency and a reproducible
+# build from the lockfile.
+whisper-rs = "0.16"
+
+# Only used by the cloud engine. The local engine needs no HTTP client at all,
+# which is part of why a local yapathon works on a machine with no network.
+reqwest.workspace = true
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["rt", "macros"] }
+
+# whisper.cpp's GPU backends are selected at compile time: a binary built
+# without the `cuda` feature cannot fall back to it at runtime, it produces no
+# output. So each is opt-in and the default build is CPU, which works everywhere.
+[features]
+default = []
+whisper-metal = ["whisper-rs/metal"]
+whisper-cuda = ["whisper-rs/cuda"]
+whisper-vulkan = ["whisper-rs/vulkan"]
+
+[lints]
+workspace = true
