@@ -62,8 +62,15 @@ pub struct SessionModel {
     pub behind: bool,
     /// Last microphone error, shown in place of the controls.
     pub mic_error: Option<String>,
-    /// The URL OBS's browser source should point at.
+    /// The base URL OBS's browser source should point at, without a query.
     pub overlay_url: String,
+    /// Which overlay theme is in force.
+    ///
+    /// Carried on the model because it has to reach two places — the URL the Run
+    /// tab offers to copy, and the server that serves it — and because the view
+    /// already observes this entity, so a change repaints the window without
+    /// anything else having to notice.
+    pub overlay_theme: String,
 }
 
 impl SessionModel {
@@ -304,6 +311,7 @@ impl SessionEntity {
         cx: &mut gpui_kit::App,
     ) -> Entity<Self> {
         let model = SessionModel {
+            overlay_theme: state.overlay_theme(None),
             overlay_url,
             ..SessionModel::default()
         };
@@ -363,6 +371,17 @@ impl SessionEntity {
     /// The shared state, for issuing commands.
     pub fn state(&self) -> &Arc<AppState> {
         &self.state
+    }
+
+    /// Change the overlay theme and tell the server.
+    ///
+    /// Both at once, because they have to agree: the window offers a URL with
+    /// the theme in it and the server serves whatever that URL asks for. Setting
+    /// one without the other is how a streamer copies a `?theme=cute` URL and
+    /// gets the default card.
+    pub fn set_overlay_theme(&mut self, theme: &str, cx: &mut gpui::Context<Self>) {
+        self.model.overlay_theme = self.state.overlay_theme(Some(theme));
+        cx.notify();
     }
 
     /// Set the microphone error, which the controls render in place of

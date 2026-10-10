@@ -822,8 +822,9 @@ impl SettingsView {
     /// Write the panel back to the settings file.
     fn save(&mut self, cx: &mut gpui::Context<Self>) {
         match self.write() {
-            Ok(()) => {
+            Ok(saved) => {
                 self.settings.mark_saved();
+                self.apply_live(&saved, cx);
                 self.settings.notice = Some("saved".to_string());
                 cx.notify();
             }
@@ -838,8 +839,29 @@ impl SettingsView {
         }
     }
 
+    /// Put the parts of a save that can take effect now, into effect now.
+    ///
+    /// Appearance, accent and overlay theme used to be applied once at startup,
+    /// so picking a different one in this panel changed a number in the file and
+    /// nothing else — a setting that looks live and is not, which is the same
+    /// class of thing as the Events panel.
+    ///
+    /// The window repaints because the session entity is notified. The view
+    /// observes that entity, so it is already the right lever: reaching through
+    /// to the window from here would mean a handle to something that is not this
+    /// panel's to hold.
+    fn apply_live(&self, saved: &yap_core::settings::Settings, cx: &mut gpui::Context<Self>) {
+        crate::theme::set_accent(crate::theme::Accent::from_id(&saved.accent));
+
+        // The overlay reads its theme from the shared state, so this is what the
+        // served page will use on its next poll.
+        self.model.update(cx, |model, cx| {
+            model.set_overlay_theme(&saved.overlay_theme, cx)
+        });
+    }
+
     /// The write itself, split out so it can be tested without a window.
-    pub fn write(&self) -> anyhow::Result<()> {
+    pub fn write(&self) -> anyhow::Result<yap_core::settings::Settings> {
         let mut settings = yap_core::settings::load(&self.path)?;
 
         for section in SETTINGS_SECTIONS {
@@ -850,7 +872,11 @@ impl SettingsView {
         }
 
         yap_core::settings::save(&self.path, &settings)?;
-        Ok(())
+
+        // Returned so the caller can apply whatever takes effect immediately,
+        // from the same values that were written. Reading the file back instead
+        // would mean two sources of truth for one save.
+        Ok(settings)
     }
 }
 
@@ -1126,6 +1152,27 @@ fn engine_section() -> usize {
 mod tests {
     use super::*;
     use yap_core::settings::{Settings, default_model_path};
+
+    #[test]
+    fn the_url_the_app_offers_carries_the_theme_it_serves() {
+        // The window and the server have to agree about which look is in force.
+        // If the window offered `/overlay` while the server was set to `cute`,
+        // a streamer copying the URL would get the default card and conclude
+        // the setting did not work.
+        let state = yap_server::AppState::shared();
+        state.set_overlay_theme("mono");
+
+        let theme = state.overlay_theme(None);
+        assert_eq!(theme, "mono");
+
+        let offered = format!("http://127.0.0.1:8973/overlay?theme={theme}",);
+
+        // The URL the app hands over is authoritative: asking for that theme
+        // serves it, whatever the setting happens to be later.
+        state.set_overlay_theme("card");
+        assert_eq!(state.overlay_theme(Some("mono")), "mono");
+        assert!(offered.ends_with("?theme=mono"));
+    }
 
     #[test]
     fn the_overlay_theme_the_panel_offers_is_the_one_that_renders() {

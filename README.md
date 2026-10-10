@@ -242,14 +242,30 @@ http://127.0.0.1:8973/overlay?theme=minimal
 and copying the winner into OBS. `?opaque=1` still works on every theme, for a
 GPU path where the card's alpha composites to nothing.
 
-**The window** — Settings → Server → Accent colour: teal, green, pink, purple,
-amber, blue, or mono. Light and dark are separate.
+**The URL the app offers you already has the theme in it** —
+`http://127.0.0.1:8973/overlay?theme=neon`. That is deliberate: a Browser Source
+is created once and then left alone, so a bare `/overlay` would mean changing the
+theme in settings silently changed what is on stream. With the theme in the URL,
+the source says which look it is.
 
-Both take effect on the next launch. Every colour in both is checked against the
-surface it sits on at 4.5:1 or better, in both light and dark — a test, not an
-opinion. That check is why the pastel theme's muted text is a deep mauve rather
-than the pale pink it started as, and why the dark theme's accent is lighter than
-the eye first reaches for.
+**Changing the theme does not need the source re-added.** Every theme is already
+in the served page, so the overlay swaps its own `data-theme` attribute on the
+next poll — about two seconds, no reload, no flash. A URL with `?theme=` in it is
+pinned, though: nothing the app says afterwards will override a look the streamer
+chose explicitly.
+
+**The window** — Settings → Server → Accent colour: teal, green, pink, purple,
+amber, blue, or mono. Light and dark are a separate setting.
+
+All of it applies the moment you press Save. The accent and the overlay theme
+are pushed into the running app, and the overlay picks the change up on its next
+poll — nothing needs a restart, and a setting that changes a file but nothing
+else is worse than no setting at all.
+
+Every colour in both places is checked against the surface it sits on at 4.5:1 or
+better, in both light and dark — a test, not an opinion. That check is why the
+pastel theme's muted text is a deep mauve rather than the pale pink it started
+as, and why the dark theme's accent is lighter than the eye first reaches for.
 
 ## Settings
 

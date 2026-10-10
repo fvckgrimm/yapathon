@@ -412,12 +412,28 @@ fetch('/api/state')
     remainingEl.textContent = 'is the app still running?';
   });
 
+// Was the theme pinned in this page's own URL?
+//
+// If it was, that is a deliberate choice — the streamer copied a URL with a
+// theme in it — and nothing the app says afterwards should override it. If it
+// was not, the overlay follows the app's setting, so changing it does not mean
+// deleting and re-adding a Browser Source mid-stream.
+const themeIsPinned = new URLSearchParams(location.search).has('theme');
+
 // Poll as well as subscribing. Cheap: a few bytes, and the interval only matters
 // when the socket is unavailable.
 setInterval(() => {
   fetch('/api/state')
     .then((r) => r.json())
-    .then((body) => render(body.snapshot))
+    .then((body) => {
+      render(body.snapshot);
+
+      if (!themeIsPinned && body.overlay_theme && document.body.dataset.theme !== body.overlay_theme) {
+        // Only the attribute changes: every theme is already in this page's
+        // stylesheet, so there is nothing to reload and nothing to flash.
+        document.body.dataset.theme = body.overlay_theme;
+      }
+    })
     .catch(() => {});
 }, 2000);
 
@@ -1173,6 +1189,58 @@ mod tests {
         assert!(
             !html.contains("fillEl.style.width"),
             "the fill must not be driven by width",
+        );
+    }
+
+    #[test]
+    fn the_overlay_restyles_itself_without_a_reload() {
+        // OBS creates a Browser Source once and then leaves it alone. If changing
+        // the theme meant re-adding the source, "pick a different look" would mean
+        // "break the stream", which is a bad trade for a colour.
+        //
+        // Every theme is already in the served page, so restyling is one attribute
+        // and no reload. The guard is the important half: a URL with `?theme=` is a
+        // deliberate choice and nothing the app says afterwards may override it.
+        let html = overlay_html();
+
+        assert!(
+            html.contains("themeIsPinned"),
+            "the overlay must know whether its theme was pinned in the URL",
+        );
+        assert!(
+            html.contains("document.body.dataset.theme = body.overlay_theme"),
+            "the overlay must adopt the served theme",
+        );
+        assert!(
+            !html.contains("location.reload"),
+            "nothing may reload the page to restyle it",
+        );
+
+        // And every theme is present in the page regardless of which one is served,
+        // which is what makes a live swap possible at all.
+        for theme in OVERLAY_THEMES {
+            assert!(
+                html.contains(&format!(r#"body[data-theme="{}"]"#, theme.id)),
+                "{} is not in the served page, so it cannot be swapped to live",
+                theme.id,
+            );
+        }
+    }
+
+    #[test]
+    fn the_served_state_carries_the_theme() {
+        // Without this in the response the overlay has nothing to swap to, and the
+        // poll would have to become a reload.
+        let state = AppState::shared();
+        state.set_overlay_theme("neon");
+        assert_eq!(state.overlay_theme(None), "neon");
+
+        // A pinned URL still wins, because that is the streamer having chosen it.
+        assert_eq!(state.overlay_theme(Some("cute")), "cute");
+        assert_eq!(
+            state.overlay_theme(None),
+            "neon",
+            "the setting is unchanged"
         );
     }
 

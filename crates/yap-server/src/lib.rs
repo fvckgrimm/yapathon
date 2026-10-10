@@ -125,6 +125,13 @@ struct StateResponse {
     listening: bool,
     warnings: Vec<String>,
     events: Vec<Event>,
+    /// The overlay theme currently in force.
+    ///
+    /// Carried here so the overlay can restyle itself without a reload: OBS
+    /// creates a Browser Source once and then leaves it alone, so changing the
+    /// theme in settings would otherwise need the source to be deleted and
+    /// re-added mid-stream.
+    overlay_theme: String,
 }
 
 async fn get_state(State(state): State<Arc<AppState>>) -> Json<StateResponse> {
@@ -133,6 +140,7 @@ async fn get_state(State(state): State<Arc<AppState>>) -> Json<StateResponse> {
         listening: state.is_listening().await,
         warnings: state.warnings().await,
         events: state.events().await,
+        overlay_theme: state.overlay_theme(None),
     })
 }
 

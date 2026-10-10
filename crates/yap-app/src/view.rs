@@ -804,7 +804,19 @@ impl YapView {
     /// What OBS needs to be told, since getting it wrong is the difference
     /// between a visible overlay and an invisible one.
     fn render_obs_help(&self, model: &SessionModel, cx: &mut App) -> impl IntoElement {
-        let url = model.overlay_url.clone();
+        // The theme is baked into the URL OBS is given, rather than left to
+        // whatever the app's default happens to be on the day.
+        //
+        // A Browser Source is created once and then just sits there. If the URL
+        // were `/overlay`, changing the theme in settings would silently change
+        // what is on stream — or, worse, appear to do nothing on a machine
+        // where OBS was set up before the setting existed. Putting the chosen
+        // look in the URL makes the source self-describing: this is what the
+        // streamer picked, and copying the settings elsewhere changes it.
+        //
+        // `?theme=` already wins over the saved setting on the server, so no
+        // other change is needed for the URL to be authoritative.
+        let url = format!("{}?theme={}", model.overlay_url, model.overlay_theme);
         let copied = self.copied_url;
 
         div()

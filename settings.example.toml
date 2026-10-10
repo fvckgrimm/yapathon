@@ -39,6 +39,9 @@ port = 8973
 # accent: teal (default), green, pink, purple, amber, blue, mono
 #   "mono" is for a channel that is already colourful and does not want the app
 #   adding to it.
+#
+# The accent and the overlay theme below both apply the moment you save in the
+# settings panel, not on the next launch.
 accent = "teal"
 #
 # "auto", "dark" or "light". "auto" follows the desktop where it can be asked,

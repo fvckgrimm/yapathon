@@ -117,20 +117,33 @@ impl Accent {
 /// palette for the whole session and the alternative is a parameter on roughly
 /// forty call sites. Changing it means Save plus a restart, which the settings
 /// panel says.
-static ACCENT: std::sync::OnceLock<Accent> = std::sync::OnceLock::new();
+static ACCENT: std::sync::RwLock<Accent> = std::sync::RwLock::new(Accent::Teal);
 
-/// Choose the accent. First call wins.
+/// Choose the accent.
 ///
-/// The first-call-wins part is deliberate rather than an oversight: the window is
-/// built before any settings can be saved, so there is no second chance to
-/// change this within a run anyway.
+/// Overwritable, and called again whenever the settings panel saves, so picking
+/// a colour changes the window immediately rather than on the next launch.
+///
+/// A lock rather than a `OnceLock` because "first call wins" is exactly the bug
+/// this used to have: the value was set at startup and then nothing could ever
+/// change it, so the setting looked live and was not. The contention is
+/// nil — one write per save, a read per colour — so there is nothing to gain
+/// from making this cleverer.
 pub fn set_accent(accent: Accent) {
-    let _ = ACCENT.set(accent);
+    match ACCENT.write() {
+        Ok(mut guard) => *guard = accent,
+        // A panic elsewhere poisoned this. Showing the default accent beats
+        // taking the window down.
+        Err(poisoned) => *poisoned.into_inner() = accent,
+    }
 }
 
 /// The accent in force.
 pub fn accent() -> Accent {
-    ACCENT.get().copied().unwrap_or_default()
+    match ACCENT.read() {
+        Ok(guard) => *guard,
+        Err(poisoned) => *poisoned.into_inner(),
+    }
 }
 
 /// Which palette to use.
@@ -542,6 +555,25 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn an_accent_change_takes_effect_without_a_restart() {
+        // This used to be a `OnceLock`, set once at startup. Picking a colour in the
+        // settings panel therefore changed a value in the file and nothing else —
+        // a setting that looks live and is not, which is the same failure as the
+        // Events panel being decorative.
+        assert_eq!(accent(), Accent::default());
+
+        set_accent(Accent::Pink);
+        assert_eq!(accent(), Accent::Pink, "a second choice must win");
+
+        set_accent(Accent::Amber);
+        assert_eq!(accent(), Accent::Amber, "and a third");
+
+        // Restored, because the accent is process-wide and a test that leaves it
+        // set would decide the palette for every test after it.
+        set_accent(Accent::default());
     }
 
     #[test]
