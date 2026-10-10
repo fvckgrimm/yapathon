@@ -342,7 +342,7 @@ fn apply_accent(accent: &str) {
 ///
 /// Unknown names fall back rather than failing: the value comes out of a file a
 /// person can edit, and a typo should cost them their theme, not their app.
-fn appearance_from(name: &str) -> Appearance {
+pub(crate) fn appearance_from(name: &str) -> Appearance {
     match name.trim().to_lowercase().as_str() {
         "light" => Appearance::Light,
         "dark" => Appearance::Dark,

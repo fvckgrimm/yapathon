@@ -853,6 +853,17 @@ impl SettingsView {
     fn apply_live(&self, saved: &yap_core::settings::Settings, cx: &mut gpui::Context<Self>) {
         crate::theme::set_accent(crate::theme::Accent::from_id(&saved.accent));
 
+        // Light/dark was the one setting that never applied live at all, because
+        // the component theme is changed through the app rather than through this
+        // panel's own state — so it was the easiest one to leave out and the most
+        // obvious one to a user ("I picked light and nothing happened").
+        {
+            use gpui_kit::component::Theme as KitTheme;
+
+            let mode = crate::app::appearance_from(&saved.appearance).resolve(true);
+            KitTheme::change(mode, None, cx);
+        }
+
         // The overlay reads its theme from the shared state, so this is what the
         // served page will use on its next poll.
         self.model.update(cx, |model, cx| {
@@ -1152,6 +1163,66 @@ fn engine_section() -> usize {
 mod tests {
     use super::*;
     use yap_core::settings::{Settings, default_model_path};
+
+    #[test]
+    fn a_saved_accent_takes_effect_without_a_restart() {
+        // Pressing Save updated the file and nothing else: the window stayed the
+        // colour it was. `appearance` was worse — it was never applied live at
+        // all, because the component theme is changed through the app rather
+        // than through this panel's own state.
+        //
+        // The accent is process-wide, so this is asserted on the value rather
+        // than on pixels. Restored at the end: leaving it set would decide the
+        // palette for every test after this one.
+        use crate::theme::{Accent, accent, set_accent};
+
+        let field = SETTINGS_SECTIONS
+            .iter()
+            .flat_map(|section| section.fields.iter())
+            .find(|field| field.key == "accent")
+            .copied()
+            .expect("an accent field");
+
+        let mut settings = Settings::default();
+        assert!(apply_field(&mut settings, &field, "purple"));
+
+        // What `apply_live` does with the saved value.
+        set_accent(Accent::from_id(&settings.accent));
+        assert_eq!(accent(), Accent::Purple);
+
+        set_accent(Accent::default());
+    }
+
+    #[test]
+    fn every_appearance_the_picker_offers_is_one_the_app_understands() {
+        // `appearance` resolves an unknown name to "follow system" rather than
+        // failing, so a stale offer is a silent no-op rather than a visible
+        // failure. This is what makes the list worth checking.
+        let offered: Vec<&str> = SETTINGS_SECTIONS
+            .iter()
+            .flat_map(|section| section.fields.iter())
+            .find(|field| field.key == "appearance")
+            .map(|field| field.options.to_vec())
+            .expect("an appearance field");
+
+        // Each name must resolve to itself. "auto" resolving to the fallback is
+        // correct — it *is* the fallback — so the check is against the
+        // expectation rather than against "not the default".
+        let expected = [
+            ("auto", crate::theme::Appearance::Auto),
+            ("dark", crate::theme::Appearance::Dark),
+            ("light", crate::theme::Appearance::Light),
+        ];
+
+        for (name, want) in expected {
+            assert!(offered.contains(&name), "{name:?} is not offered");
+            assert_eq!(
+                crate::app::appearance_from(name),
+                want,
+                "{name:?} is offered but does not mean what it says",
+            );
+        }
+    }
 
     #[test]
     fn the_url_the_app_offers_carries_the_theme_it_serves() {

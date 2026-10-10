@@ -165,6 +165,14 @@ pub struct Session {
     paused_total: Duration,
     /// When the current pause began, `None` while running.
     paused_at: Option<Instant>,
+    /// When the run stopped, for a run that is over.
+    ///
+    /// Without this the clock keeps running after the run is finished: `elapsed`
+    /// is `started.elapsed()` minus paused time, and ending the run records
+    /// nothing, so a yapathon ended at twenty minutes kept counting for as long
+    /// as the app was left open. The number that matters most on screen — how
+    /// long the yapathon lasted — was quietly wrong.
+    finished_at: Option<Instant>,
 }
 
 impl Session {
@@ -183,6 +191,7 @@ impl Session {
             started: Instant::now(),
             paused_total: Duration::ZERO,
             paused_at: None,
+            finished_at: None,
         }
     }
 
@@ -224,6 +233,7 @@ impl Session {
         self.status = SessionStatus::Running;
         self.started = Instant::now();
         self.paused_at = None;
+        self.finished_at = None;
     }
 
     /// Stop counting without ending the run. Paused time is excluded from
@@ -251,7 +261,17 @@ impl Session {
         if !self.status.is_finished() {
             self.close_pause();
             self.status = SessionStatus::Ended;
+            self.finished_at = Some(Instant::now());
         }
+    }
+
+    /// Record the moment a run finished on its own, rather than being ended.
+    ///
+    /// Called wherever the status becomes terminal, so the clock stops at the
+    /// goal rather than whenever someone noticed.
+    fn mark_finished(&mut self) {
+        self.close_pause();
+        self.finished_at = Some(Instant::now());
     }
 
     /// Fold the in-flight pause into `paused_total`. Idempotent.
@@ -278,13 +298,22 @@ impl Session {
 
     /// Time since the run started, excluding pauses.
     pub fn elapsed(&self) -> Duration {
+        // Measured to the moment the run stopped, not to now. A finished
+        // yapathon is a fixed fact about a period of time; continuing to count
+        // it upwards while the app stays open makes the final number depend on
+        // when you looked rather than on when you stopped talking.
+        let span = match self.finished_at {
+            // Start to finish, not "now minus start": asking an `Instant` how
+            // long ago it was when that instant *is* now gives zero.
+            Some(finished) => finished.saturating_duration_since(self.started),
+            None => self.started.elapsed(),
+        };
+
         let in_flight = match self.paused_at {
             Some(at) if self.status == SessionStatus::Paused => at.elapsed(),
             _ => Duration::ZERO,
         };
-        self.started
-            .elapsed()
-            .saturating_sub(self.paused_total + in_flight)
+        span.saturating_sub(self.paused_total + in_flight)
     }
 
     /// Words per minute over speaking time. `None` before anything has been
@@ -333,6 +362,7 @@ impl Session {
         // which is the only place the goal can move.
         if self.progress().complete() && self.status.is_active() {
             self.status = SessionStatus::Won;
+            self.mark_finished();
         }
 
         scored.words
@@ -351,6 +381,7 @@ impl Session {
         // arrive.
         if self.tracker.is_capped() && self.status.is_active() {
             self.status = SessionStatus::Capped;
+            self.mark_finished();
         }
 
         granted
@@ -545,6 +576,95 @@ pub struct RecentUtterance {
 mod tests {
     use super::*;
     use crate::goal::HardLimit;
+
+    #[test]
+    fn a_finished_run_stops_its_own_clock() {
+        // Ended early and left open, the clock kept counting. The number a
+        // yapathon is judged on — how long it took — was really "how long since
+        // you ended it, as of whenever you last looked", which drifts all
+        // evening while the app sits on the second monitor.
+        let mut session = Session::new(SessionConfig::new(GoalMode::Fixed { words: 500 }, None));
+        session.start();
+        std::thread::sleep(std::time::Duration::from_millis(30));
+        session.end();
+
+        let at_end = session.elapsed();
+        std::thread::sleep(std::time::Duration::from_millis(30));
+
+        assert_eq!(
+            session.elapsed(),
+            at_end,
+            "a finished run's elapsed time must not keep moving",
+        );
+        assert!(
+            at_end.as_millis() >= 25,
+            "but it should still have counted the time it ran",
+        );
+    }
+
+    #[test]
+    fn a_run_that_wins_on_its_own_also_stops_its_clock() {
+        let mut session = Session::new(SessionConfig::new(GoalMode::Fixed { words: 3 }, None));
+        session.start();
+        session.record("one two three", 0, 500);
+
+        assert_eq!(session.status(), SessionStatus::Won);
+
+        let at_win = session.elapsed();
+        std::thread::sleep(std::time::Duration::from_millis(30));
+        assert_eq!(
+            session.elapsed(),
+            at_win,
+            "reaching the goal ends the run, so the clock stops there",
+        );
+    }
+
+    #[test]
+    fn a_paused_run_does_not_count_the_pause() {
+        // Distinct from the above: this one is meant to pick the clock back up.
+        // What it must not do is count the time spent paused.
+        let mut session = Session::new(SessionConfig::new(GoalMode::Fixed { words: 500 }, None));
+        session.start();
+        std::thread::sleep(std::time::Duration::from_millis(30));
+        session.pause();
+
+        let when_paused = session.elapsed();
+        std::thread::sleep(std::time::Duration::from_millis(40));
+
+        // Not exact equality: the instant `pause()` recorded and the instant this
+        // line reads are not the same nanosecond, so a sliver of a microsecond
+        // is correct rather than a rounding error. A millisecond of slack is
+        // three orders of magnitude below the 40ms just slept, so this still
+        // fails loudly if the pause is being counted.
+        let drift = session.elapsed().saturating_sub(when_paused);
+        assert!(
+            drift < std::time::Duration::from_millis(1),
+            "a paused run is not counting, but the clock moved by {drift:?}",
+        );
+
+        session.resume();
+        assert!(
+            session.elapsed() >= when_paused,
+            "resuming picks the clock back up",
+        );
+    }
+
+    #[test]
+    fn restarting_clears_the_finished_time() {
+        // Otherwise a second run would go on reporting the first one's length.
+        let mut session = Session::new(SessionConfig::new(GoalMode::Fixed { words: 500 }, None));
+        session.start();
+        std::thread::sleep(std::time::Duration::from_millis(30));
+        session.end();
+        let first = session.elapsed();
+
+        session.start();
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        assert!(
+            session.elapsed() < first + std::time::Duration::from_millis(50),
+            "a restarted run measures from the restart, not from the old one",
+        );
+    }
 
     fn words_session(target: u32) -> Session {
         let config = SessionConfig::new(GoalMode::Fixed { words: target }, None);
