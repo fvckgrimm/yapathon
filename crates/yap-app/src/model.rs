@@ -138,9 +138,26 @@ impl SessionModel {
         }
     }
 
+    /// How long the yapathon has been running.
+    ///
+    /// `elapsed_secs`, not `achieved`. They are the same number for a time run
+    /// and completely different for a word run, where `achieved` is the word
+    /// count — so reading it here meant the elapsed tile showed the word count a
+    /// second time and advanced only when someone spoke. A timer that moves when
+    /// you talk and not while you pause looks like a broken clock, and the clock
+    /// was fine: it was publishing every second, into a tile reading the wrong
+    /// field.
+    ///
+    /// The overlay has always read `elapsed_secs`, which is why the dock and OBS
+    /// showed a real clock while the window did not.
     pub fn elapsed(&self) -> String {
         match &self.snapshot {
-            Some(snapshot) => format_duration(snapshot.achieved),
+            // Saturating rather than `as u32`: a cast would wrap at about 136
+            // years of uptime, which is not a real risk, but a cast that wraps
+            // is a bug waiting for a clock nobody thought about.
+            Some(snapshot) => {
+                format_duration(snapshot.elapsed_secs.min(u64::from(u32::MAX)) as u32)
+            }
             None => "0:00".to_string(),
         }
     }
@@ -425,6 +442,87 @@ mod tests {
             snapshot: Some(snapshot),
             ..SessionModel::default()
         }
+    }
+
+    #[test]
+    fn the_elapsed_tile_is_a_clock_and_not_the_word_count_a_second_time() {
+        // The bug this exists for.
+        //
+        // `elapsed()` read `achieved`, which is the word count for a word run.
+        // So the tile labelled "elapsed" showed the word count again and only
+        // moved when someone spoke — a timer that ticks when you talk and stops
+        // while you pause. The clock underneath was fine, publishing every
+        // second; the tile was reading the wrong field, and the overlay reading
+        // the right one is why the dock looked correct while the window did not.
+        //
+        // The distinction is asserted on a run where the two numbers cannot
+        // agree: five words counted, over a second elapsed.
+        let mut session = yap_core::session::Session::new(SessionConfig::new(
+            GoalMode::Fixed { words: 5_000 },
+            None,
+        ));
+        session.start();
+        session.record("one two three four five", 0, 500);
+
+        std::thread::sleep(std::time::Duration::from_millis(1_100));
+
+        let snapshot = session.snapshot();
+        assert_eq!(snapshot.achieved, 5, "five words were counted");
+        assert!(snapshot.elapsed_secs >= 1, "a second has passed");
+
+        let model = model_with(snapshot);
+
+        assert_ne!(
+            model.elapsed(),
+            format_duration(5),
+            "the elapsed tile is showing the word count again, so it only moves when someone speaks",
+        );
+
+        // The word count still has somewhere to be shown, or fixing this would
+        // only be removing a number from the window rather than showing a
+        // better one.
+        assert_eq!(model.headline(), "5");
+        assert_eq!(model.goal_line(), "of 5000 words");
+    }
+
+    #[test]
+    fn elapsed_moves_on_a_tick_that_carries_no_new_words() {
+        // Two clock ticks, nothing said in between. If this fails, the tile is
+        // reading something that only changes on speech.
+        let mut session = yap_core::session::Session::new(SessionConfig::new(
+            GoalMode::Fixed { words: 5_000 },
+            None,
+        ));
+        session.start();
+        session.record("hello", 0, 400);
+        std::thread::sleep(std::time::Duration::from_millis(1_100));
+        let first = session.snapshot();
+
+        std::thread::sleep(std::time::Duration::from_millis(1_100));
+        let second = session.snapshot();
+
+        assert_eq!(
+            first.achieved, second.achieved,
+            "no words were said between the two ticks",
+        );
+        assert!(
+            second.elapsed_secs > first.elapsed_secs,
+            "but the clock advanced, which is the whole point of the ticker",
+        );
+
+        let mut model = model_with(first);
+        let before = model.elapsed();
+
+        assert!(
+            model.apply(ModelMessage::State(second)),
+            "a clock tick must count as a change, or the window never repaints for it",
+        );
+
+        let after = model.elapsed();
+        assert_ne!(
+            before, after,
+            "the tile reads something that only moves when words are counted",
+        );
     }
 
     #[test]
