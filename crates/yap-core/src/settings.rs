@@ -98,6 +98,21 @@ pub fn credential_name(service: &str) -> String {
     format!("yap-a-thon/{service}")
 }
 
+/// The accent used when the file does not say.
+pub fn default_accent() -> String {
+    "teal".to_string()
+}
+
+/// The appearance used when the file does not say.
+pub fn default_appearance() -> String {
+    "auto".to_string()
+}
+
+/// The overlay theme used when the file does not say.
+pub fn default_overlay_theme() -> String {
+    "card".to_string()
+}
+
 /// Everything the app remembers between runs.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
@@ -121,6 +136,21 @@ pub struct Settings {
     /// holding "input 2" means a different microphone after lunch.
     #[serde(default)]
     pub input_device: String,
+
+    /// The window's accent colour preset.
+    #[serde(default = "default_accent")]
+    pub accent: String,
+
+    /// `auto`, `dark` or `light`.
+    #[serde(default = "default_appearance")]
+    pub appearance: String,
+
+    /// Which overlay look OBS is served.
+    ///
+    /// Overridable per-request with `?theme=` so a streamer can compare looks in
+    /// a browser before copying one into their scene.
+    #[serde(default = "default_overlay_theme")]
+    pub overlay_theme: String,
 
     /// Counting rules applied to new sessions.
     pub rules: CountingRules,
@@ -184,6 +214,12 @@ impl Default for Settings {
             // a webcam microphone and a USB one, "first" is enumeration order
             // and changes when something is unplugged.
             input_device: String::new(),
+            // The card it has always been. Good defaults matter more than
+            // options — most people will never open the theme picker, and the
+            // themes exist so the handful who care can have them.
+            accent: default_accent(),
+            appearance: default_appearance(),
+            overlay_theme: default_overlay_theme(),
             rules: CountingRules::default(),
             default_mode: GoalMode::Extend { base_words: 5000 },
             default_hard_limit: Some(10_000),
@@ -219,6 +255,37 @@ impl Settings {
     /// file.
     pub fn effective_port(&self) -> u16 {
         if self.port == 0 { 8973 } else { self.port }
+    }
+
+    /// The word value of every `<platform>:<kind>` belonging to `platform`.
+    ///
+    /// Unprefixed keys, because a platform's pricing is its own concern — this is
+    /// what turns the `twitch:cheer` half of the settings file into something
+    /// the Twitch code can use.
+    pub fn pricing_for(&self, platform: &str) -> std::collections::BTreeMap<String, u32> {
+        let prefix = format!("{platform}:");
+        self.event_words
+            .iter()
+            .filter_map(|(key, words)| {
+                key.strip_prefix(&prefix)
+                    .map(|kind| (kind.to_string(), *words))
+            })
+            .collect()
+    }
+
+    /// Every `<platform>:<kind>` with a price, as platform and kind.
+    ///
+    /// Read by the settings panel so the Events section can be built from what
+    /// is actually priced rather than from a hand-written list of kinds — which
+    /// is what makes `youtube:superchat` priceable without a code change.
+    pub fn priced_events(&self) -> Vec<(String, String, u32)> {
+        self.event_words
+            .iter()
+            .filter_map(|(key, words)| {
+                let (platform, kind) = key.split_once(':')?;
+                Some((platform.to_string(), kind.to_string(), *words))
+            })
+            .collect()
     }
 }
 

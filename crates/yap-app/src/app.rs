@@ -11,7 +11,7 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use gpui::px;
 use yap_core::settings::Settings;
-use yap_events::{ChatPlatform, EventSink, TwitchPlatform};
+use yap_events::{ChatPlatform, EventSink, TwitchPlatform, TwitchPricing};
 use yap_server::AppState;
 use yap_voice::pipeline::{Listener, WordSink};
 
@@ -54,7 +54,8 @@ pub fn open_main_window(
     // Dark unless the preference says otherwise, applied before the window so
     // the first frame is already the right colour rather than visibly changing
     // one frame later.
-    apply_appearance(hub.appearance(), cx);
+    apply_appearance(appearance_from(&settings.appearance), cx);
+    apply_accent(&settings.accent);
 
     let session = SessionEntity::new(hub.state(), messages, overlay_url, cx);
 
@@ -208,7 +209,14 @@ fn start_twitch(hub: &Hub) {
     let hub = hub.clone();
 
     runtime::spawn(async move {
-        let platform = match TwitchPlatform::from_keyring(channel, &service, &client_id) {
+        // Pricing comes from the settings file, not from the platform's
+        // built-in defaults. It used to, which meant the Events section of the
+        // settings panel was editing numbers nothing read — a control that
+        // shows a value and changes nothing, which is the bug this project has
+        // been repeatedly bitten by.
+        let pricing = twitch_pricing(hub.settings());
+
+        let platform = match TwitchPlatform::from_keyring(channel, &service, &client_id, pricing) {
             Ok(platform) => platform,
             Err(error) => {
                 hub.report_awaited(ModelMessage::Warning(format!(
@@ -225,6 +233,21 @@ fn start_twitch(hub: &Hub) {
             hub.report(ModelMessage::Warning(format!("twitch stopped: {error:#}")));
         }
     });
+}
+
+/// The pricing Twitch events are awarded with.
+///
+/// Named rather than inlined at the call site, because it used to be inlined —
+/// as `TwitchPricing::default()`, a set of hardcoded numbers. That made the
+/// Events section of the settings panel decorative: it read and wrote
+/// `settings.event_words` faithfully and nothing ever read it back, so changing a
+/// price and pressing Save did nothing and reported nothing.
+///
+/// It is a function so there is a thing to test. A test that builds the pricing
+/// itself would pass whether or not the call site used it, which is exactly the
+/// gap that let the original bug through.
+pub fn twitch_pricing(settings: &yap_core::settings::Settings) -> TwitchPricing {
+    TwitchPricing::from_words(settings.pricing_for("twitch"))
 }
 
 /// Recognised words, into the session.
@@ -305,6 +328,28 @@ fn apply_appearance(appearance: Appearance, cx: &mut gpui_kit::App) {
     Theme::change(mode, None, cx);
 }
 
+/// Apply the settings that decide how the window looks.
+///
+/// Separate from [`apply_appearance`] because the accent is ours rather than
+/// the component theme's: `Theme::accent` reads a process-wide value, so it has
+/// to be set before anything renders, and `Theme::change` has no idea it
+/// exists.
+fn apply_accent(accent: &str) {
+    crate::theme::set_accent(crate::theme::Accent::from_id(accent));
+}
+
+/// The appearance a settings value names.
+///
+/// Unknown names fall back rather than failing: the value comes out of a file a
+/// person can edit, and a typo should cost them their theme, not their app.
+fn appearance_from(name: &str) -> Appearance {
+    match name.trim().to_lowercase().as_str() {
+        "light" => Appearance::Light,
+        "dark" => Appearance::Dark,
+        _ => Appearance::Auto,
+    }
+}
+
 /// A window that fits the display it opens on.
 ///
 /// A fixed size larger than a small laptop opens partly off-screen, where there
@@ -345,6 +390,16 @@ pub async fn start_server(
     // window's counter, `listening` never turned true, and the overlay showed a
     // second empty session. Nothing errored, because both halves were perfectly
     // healthy — they just were not the same half.
+    //
+    // The overlay theme goes in here for the same reason: it is a setting the
+    // served page needs, and the page cannot read the file per request.
+    state.set_overlay_theme(&settings.overlay_theme);
+
+    // The clock, so elapsed time and words-per-minute move even while the
+    // streamer is not talking. Started with the server rather than the window so
+    // the overlay and the dock get it too, including when no window exists.
+    state.start_ticker();
+
     let server =
         yap_server::Server::bind(&settings.bind_address, settings.effective_port(), state).await?;
 
@@ -357,6 +412,161 @@ pub async fn start_server(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::model::{ModelMessage, SessionEntity};
+    use yap_core::goal::GoalMode;
+    use yap_core::session::{Session, SessionConfig};
+
+    /// Holds a session entity alive for a test about the entity rather than the
+    /// window on top of it.
+    ///
+    /// Needs to be a window root because `add_window_view` hands the context it
+    /// constructs the entity with, and a bare `Entity` has no context to
+    /// construct one in.
+    struct Holder {
+        entity: gpui::Entity<SessionEntity>,
+    }
+
+    impl gpui::Render for Holder {
+        fn render(
+            &mut self,
+            _window: &mut gpui::Window,
+            _cx: &mut gpui::Context<Self>,
+        ) -> impl gpui::IntoElement {
+            gpui::div()
+        }
+    }
+
+    #[gpui_kit::test]
+    fn a_clock_tick_reaches_the_window(cx: &mut gpui_kit::TestAppContext) {
+        // The other half of the frozen-stats fix.
+        //
+        // The ticker publishes a snapshot every second, and the entity folds it
+        // in — but a folded-in model is not a repainted window. The view
+        // subscribes to the entity, and repainting only happens if the entity
+        // says so. When the model changed silently the window sat at whatever
+        // it last drew, which for elapsed time meant the timer never moved.
+        //
+        // So this asserts the notification, not the value: a model that quietly
+        // holds the right number looks exactly like a frozen one from in here.
+        use std::cell::Cell;
+        use std::rc::Rc;
+
+        let (_sender, receiver) = async_channel::unbounded::<ModelMessage>();
+        let state = std::sync::Arc::new(yap_server::AppState::shared());
+
+        cx.update(gpui_kit::init);
+        let (holder, cx) = cx.add_window_view({
+            let state = state.clone();
+            move |_window, cx| Holder {
+                entity: SessionEntity::new(
+                    std::sync::Arc::clone(&state),
+                    receiver,
+                    "http://127.0.0.1:8973/overlay".to_string(),
+                    cx,
+                ),
+            }
+        });
+        let entity = cx.update(|_window, cx| holder.read(cx).entity.clone());
+
+        let repaints = Rc::new(Cell::new(0usize));
+        let _observing = cx.update(|_window, cx| {
+            let repaints = Rc::clone(&repaints);
+            cx.observe(&entity, move |_entity, _cx| {
+                repaints.set(repaints.get() + 1);
+            })
+        });
+
+        // Two snapshots a second apart, which is exactly what the ticker sends.
+        let mut session = Session::new(SessionConfig::new(GoalMode::Fixed { words: 5000 }, None));
+        session.start();
+
+        for _ in 0..2 {
+            _sender
+                .send_blocking(ModelMessage::State(session.snapshot()))
+                .expect("the entity is listening");
+            cx.run_until_parked();
+            std::thread::sleep(std::time::Duration::from_millis(1_100));
+        }
+
+        assert!(
+            repaints.get() >= 2,
+            "a moving clock must repaint the window; got {} repaints",
+            repaints.get(),
+        );
+    }
+
+    #[test]
+    fn the_appearance_setting_reaches_the_theme() {
+        // A typo in the file must cost the theme, not the app: `Appearance` has
+        // no error case, so anything unrecognised resolves to following the
+        // desktop, which is what a person who never touched the setting gets.
+        assert_eq!(appearance_from("light"), Appearance::Light);
+        assert_eq!(appearance_from("dark"), Appearance::Dark);
+        assert_eq!(appearance_from("auto"), Appearance::Auto);
+        assert_eq!(appearance_from("  LIGHT "), Appearance::Light);
+
+        for nonsense in ["", "darkk", "true", "midnight"] {
+            assert_eq!(
+                appearance_from(nonsense),
+                Appearance::Auto,
+                "{nonsense:?} should fall back rather than fail",
+            );
+        }
+    }
+
+    #[test]
+    fn twitch_pricing_comes_from_the_settings_file() {
+        // The wiring, not just the pieces. This used to be
+        // `TwitchPricing::default()` at the call site, which is why the Events
+        // settings section could be edited all day and change nothing.
+        let settings = yap_core::settings::Settings {
+            event_words: [
+                ("twitch:cheer".to_string(), 1),
+                ("twitch:gift_sub".to_string(), 7),
+            ]
+            .into_iter()
+            .collect(),
+            ..Default::default()
+        };
+
+        let pricing = twitch_pricing(&settings);
+        assert_eq!(pricing.get("gift_sub"), Some(7));
+
+        // And it must differ from the hardcoded defaults, or the assertion above
+        // would also pass with the old code — which is 50, so it would not, but
+        // saying so here is cheaper than discovering it later when a default
+        // changes to match a test.
+        assert_ne!(
+            pricing.get("gift_sub"),
+            TwitchPricing::default().get("gift_sub"),
+        );
+
+        let event = yap_events::price_event(
+            "twitch",
+            "gift_sub",
+            None,
+            Some(100.0),
+            pricing.get("gift_sub"),
+        );
+        assert_eq!(event.words, Some(700));
+    }
+
+    #[test]
+    fn a_priced_platform_does_not_leak_into_another() {
+        // Only relevant once YouTube exists, but it is the property that makes
+        // adding a platform safe, so it is pinned now while it is cheap.
+        let settings = yap_core::settings::Settings {
+            event_words: [("twitch:cheer".to_string(), 1)].into_iter().collect(),
+            ..Default::default()
+        };
+
+        let twitch = twitch_pricing(&settings);
+        assert_eq!(twitch.words.len(), 1);
+        assert!(
+            !twitch.words.contains_key("superchat"),
+            "twitch pricing must only contain twitch kinds",
+        );
+    }
 
     /// A port nothing is listening on.
     ///

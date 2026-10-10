@@ -230,6 +230,30 @@ const TWITCH: &[Field] = &[
 
 const SERVER: &[Field] = &[
     Field {
+        key: "accent",
+        label: "Accent colour",
+        kind: FieldKind::Choice,
+        options: &["teal", "green", "pink", "purple", "amber", "blue", "mono"],
+        help: Some("tints the count and the highlights; applies on next launch"),
+    },
+    Field {
+        key: "appearance",
+        label: "Light or dark",
+        kind: FieldKind::Choice,
+        options: &["auto", "dark", "light"],
+        help: Some("dark unless you ask otherwise"),
+    },
+    Field {
+        key: "overlay_theme",
+        label: "Overlay look",
+        kind: FieldKind::Choice,
+        options: &["card", "minimal", "cute", "neon", "mono"],
+        help: Some(
+            "what OBS shows; preview one at a time by adding ?theme=name to the \
+             overlay URL in a browser",
+        ),
+    },
+    Field {
         key: "bind_address",
         label: "Bind address",
         kind: FieldKind::Text,

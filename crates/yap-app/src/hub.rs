@@ -21,6 +21,41 @@ use yap_server::AppState;
 
 use crate::model::ModelMessage;
 
+/// Forward every published snapshot to the window's message channel.
+///
+/// ## Why this exists
+///
+/// The window learns about the run through `ModelMessage::State`, and the run
+/// publishes snapshots on a broadcast channel. Nothing connected the two.
+///
+/// The transcript and the warnings still arrived, because those are reported
+/// through the hub directly rather than through the channel. So the window showed
+/// a live transcript and a live warning list over a frozen count, a frozen "to
+/// go", a frozen rate and a frozen timer — every number that comes from a
+/// snapshot, and none of them, while the numbers pushed by hand worked fine.
+/// The dock looked healthy because it polls `/api/state` rather than
+/// subscribing, which is what made this read as "the window is broken" rather
+/// than "nothing is forwarding".
+///
+/// Dropping a snapshot when the window is slow is deliberate: a queue that grows
+/// while nobody is reading turns into a window that repaints a hundred times a
+/// second trying to catch up, and the next tick is a second away.
+fn forward_snapshots(state: &Arc<AppState>, messages: &async_channel::Sender<ModelMessage>) {
+    // Subscribed here rather than inside the task: a broadcast receiver only
+    // sees what was published after it subscribed, so a receiver created in the
+    // spawned task could miss the first snapshot.
+    let mut updates = state.subscribe();
+    let messages = messages.clone();
+
+    crate::runtime::spawn(async move {
+        while let Ok(snapshot) = updates.recv().await {
+            if messages.try_send(ModelMessage::State(snapshot)).is_err() {
+                log::debug!("yap-a-thon: window is behind; dropped a snapshot");
+            }
+        }
+    });
+}
+
 /// Everything the background work needs to report back.
 ///
 /// Not `Debug`: it holds the session state, which is behind a lock and has no
@@ -67,15 +102,21 @@ impl Hub {
     }
 
     /// A hub that knows the loader substituted a model.
+    ///
+    /// Also starts forwarding snapshots to the message channel, which is the
+    /// only reason the window knows anything at all.
     pub fn with_substitution(
         settings: Settings,
         model_substitution: Option<yap_core::settings::ModelSubstitution>,
     ) -> (Self, async_channel::Receiver<ModelMessage>) {
         let (sender, receiver) = async_channel::bounded(64);
+        let state = AppState::shared();
+
+        forward_snapshots(&state, &sender);
 
         (
             Self {
-                state: AppState::shared(),
+                state,
                 messages: sender,
                 settings: Arc::new(settings),
                 model_substitution,
@@ -129,6 +170,60 @@ impl Hub {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use yap_core::settings::Settings;
+
+    #[tokio::test]
+    async fn the_hub_delivers_snapshots_to_the_window() {
+        // The bug this covers: nothing forwarded the broadcast to the window's
+        // message channel, so every number derived from a snapshot stayed frozen
+        // — count, to-go, rate, elapsed, from-chat — while the transcript and
+        // the warnings, which are reported directly, kept working.
+        //
+        // A test that builds the `Hub` and asserts the message arrives is the
+        // only shape that catches it: everything else in the app was already
+        // correct, in isolation and on screen.
+        let (hub, messages) = Hub::new(Settings::default());
+
+        // A run has to exist: the ticker is quiet with no session, which is
+        // most of the app's life.
+        hub.state()
+            .start_session(yap_core::session::SessionConfig::new(
+                yap_core::goal::GoalMode::Fixed { words: 5_000 },
+                None,
+            ))
+            .await
+            .expect("start a run");
+        hub.state().start_ticker();
+
+        let mut seen = 0;
+        let mut elapsed = std::collections::HashSet::new();
+
+        // A few seconds of ticks.
+        for _ in 0..3 {
+            let message =
+                tokio::time::timeout(std::time::Duration::from_millis(4_000), messages.recv())
+                    .await;
+
+            match message {
+                Ok(Ok(ModelMessage::State(snapshot))) => {
+                    seen += 1;
+                    elapsed.insert(snapshot.elapsed_secs);
+                }
+                Ok(Ok(_)) => {}
+                Ok(Err(_)) => panic!("the message channel closed"),
+                Err(_) => panic!("no snapshot arrived within four seconds"),
+            }
+        }
+
+        assert!(
+            seen >= 2,
+            "the window should be receiving snapshots; got {seen}",
+        );
+        assert!(
+            elapsed.len() >= 2,
+            "the snapshots carried a moving clock, not a frozen one: {elapsed:?}",
+        );
+    }
 
     /// A port nothing is listening on.
     ///

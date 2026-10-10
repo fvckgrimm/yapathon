@@ -25,12 +25,31 @@ const OVERLAY_HTML: &str = r##"<!doctype html>
 <title>yap-a-thon overlay</title>
 <style>
   :root {
-    --bg: #101014;
+    /* Every themeable value is a variable so a theme is data, not a fork of
+       this stylesheet. The defaults below are the `card` theme; the rules at
+       the bottom override them by setting `data-theme` on the body. */
+    --card: rgba(16, 16, 20, 0.92);
+    --card-solid: #101014;
+    --card-border: 1px solid rgba(255, 255, 255, 0.08);
     --fg: #f4f4f5;
     --dim: #a1a1aa;
     --accent: #4ade80;
     --warn: #fbbf24;
     --capped: #f87171;
+    --radius: 0.75rem;
+    --pad-y: 1.25rem;
+    --pad-x: 1.5rem;
+    --min-width: 16rem;
+    --count-size: 3.5rem;
+    --count-weight: 700;
+    --count-spacing: normal;
+    --bar-height: 0.375rem;
+    --bar-radius: 999px;
+    --track: rgba(255, 255, 255, 0.1);
+    --corner-x: 2rem;
+    --corner-y: 2rem;
+    --glow: none;
+    --font: ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
   }
   * { box-sizing: border-box; }
   html, body {
@@ -51,16 +70,16 @@ const OVERLAY_HTML: &str = r##"<!doctype html>
   }
   .card {
     position: absolute;
-    right: 2rem;
-    bottom: 2rem;
+    right: var(--corner-x);
+    bottom: var(--corner-y);
     /* `min-width` alone let the card overflow a narrow browser source and be
        clipped by `overflow: hidden`, which is how an overlay that works in a
        browser ends up invisible in a scene sized 320x180. `max-width` as well
        keeps it inside any source the streamer sizes. */
-    min-width: 16rem;
+    min-width: var(--min-width);
     max-width: min(28rem, calc(100% - 4rem));
     box-sizing: border-box;
-    padding: 1.25rem 1.5rem;
+    padding: var(--pad-y) var(--pad-x);
     /* Opaque, and no `backdrop-filter`.
        OBS's CEF does not render `backdrop-filter` reliably — it can promote the
        element into a compositing layer that comes back empty, taking the card
@@ -68,9 +87,9 @@ const OVERLAY_HTML: &str = r##"<!doctype html>
        precisely the failure this file had: correct DOM, nothing on screen in
        OBS. A frosted look is not worth a blank overlay, so there is no blur
        here at all. */
-    background: rgba(16, 16, 20, 0.92);
-    border-radius: 0.75rem;
-    border: 1px solid rgba(255, 255, 255, 0.08);
+    background: var(--card);
+    border-radius: var(--radius);
+    border: var(--card-border);
   }
   .status {
     font-size: 0.75rem;
@@ -79,25 +98,45 @@ const OVERLAY_HTML: &str = r##"<!doctype html>
     color: var(--dim);
   }
   .count {
-    font-size: 3.5rem;
-    font-weight: 700;
+    font-size: var(--count-size);
+    font-weight: var(--count-weight);
+    letter-spacing: var(--count-spacing);
     font-variant-numeric: tabular-nums;
     line-height: 1.05;
+    /* `box-shadow` and not `text-shadow` or `filter`: those promote the element
+       into a compositing layer CEF can return empty, which is the failure that
+       cost this overlay an entire debugging session. A box-shadow paints with
+       the element and is safe. */
+    box-shadow: var(--glow);
   }
   .target { color: var(--dim); font-weight: 400; font-size: 0.45em; }
   .bar {
-    height: 0.375rem;
-    background: rgba(255, 255, 255, 0.1);
-    border-radius: 999px;
+    height: var(--bar-height);
+    background: var(--track);
+    border-radius: var(--bar-radius);
     overflow: hidden;
     margin: 0.75rem 0 0.5rem;
   }
   .fill {
     height: 100%;
+    /* Full width, scaled from the left, so filling is a compositor transform
+       rather than a layout. Transitioning `width` here relayouts the card on
+       every counted utterance and every event — which during a stream is
+       several times a second, for motion nobody asked for. */
+    width: 100%;
+    transform: scaleX(0);
+    transform-origin: left center;
     background: var(--accent);
-    /* A quarter second: long enough to read as motion, short enough that a
-       sub extending the goal is visible as the bar going backwards. */
-    transition: width 250ms ease-out;
+    /* 220ms on a real ease-out rather than the built-in `ease-out`, which is too
+       weak to read as motion: it leaves and arrives without conviction. Long
+       enough to see a sub push the bar backwards, short enough that the bar is
+       never behind the number. */
+    transition: transform 220ms cubic-bezier(0.23, 1, 0.32, 1);
+  }
+  @media (prefers-reduced-motion: reduce) {
+    /* Someone who has asked for less motion gets a bar that jumps. The colour
+       still carries the meaning; only the movement goes. */
+    .fill { transition-duration: 1ms; }
   }
   .row {
     display: flex;
@@ -121,6 +160,132 @@ const OVERLAY_HTML: &str = r##"<!doctype html>
   .won .count { color: var(--accent); }
   .paused .count { color: var(--warn); }
   .hidden { display: none; }
+
+  /* --- Themes -----------------------------------------------------------
+     One rule per theme, overriding only what differs. Kept in the stylesheet
+     rather than generated so the served page is still one static string, which
+     is what lets `?debug=1` show the real thing and what keeps the CEF hazard
+     list checkable by reading this file.
+
+     A theme may not introduce `filter`, `text-shadow`, `backdrop-filter`,
+     `mix-blend-mode` or `clip-path`. See the note above; there is a test. */
+
+  /* Card: the default, spelled out rather than left to the `:root` values.
+     Repeating them costs nothing and means every theme has a rule of its own —
+     which is what lets a test check that the stylesheet and the Rust table
+     agree, rather than one of them drifting silently. */
+  body[data-theme="card"] {
+    --card: rgba(16, 16, 20, 0.92);
+    --card-solid: #101014;
+    --card-border: 1px solid rgba(255, 255, 255, 0.08);
+    --fg: #f4f4f5;
+    --dim: #a1a1aa;
+    --accent: #4ade80;
+    --warn: #fbbf24;
+    --capped: #f87171;
+    --radius: 0.75rem;
+  }
+
+  /* Minimal: the same information with nothing decorative. Square corners, no
+     border, tighter type, dimmer secondary text, and moved to the top-left
+     because a small block reads better there than tucked into a corner. The
+     card keeps a solid backing — white text over video with no plate behind it
+     is unreadable a good fraction of the time, and legibility is the one thing
+     a minimal theme is not allowed to trade away. */
+  body[data-theme="minimal"] {
+    --card: rgba(8, 8, 12, 0.86);
+    --card-solid: #08080c;
+    --card-border: none;
+    --radius: 0.25rem;
+    --pad-y: 0.75rem;
+    --pad-x: 1rem;
+    --min-width: 12rem;
+    --count-size: 2.5rem;
+    --count-weight: 600;
+    --fg: #fafafa;
+    --dim: #8b8b94;
+    --accent: #7dd3fc;
+    --track: rgba(255, 255, 255, 0.14);
+    --corner-x: auto;
+    --corner-y: auto;
+    left: 2rem;
+    top: 2rem;
+    bottom: auto;
+  }
+
+  /* Cute: pastel, pill-shaped, deliberately soft. The lightest theme, which
+     means it is the one most at risk over a bright stream — hence a card that
+     is nearly opaque. The accent is a deep rose rather than a pale pink
+     because a pale pink on a pale pink card is decoration, not a number. */
+  body[data-theme="cute"] {
+    --card: rgba(255, 245, 251, 0.95);
+    --card-solid: #fff5fb;
+    --card-border: 2px solid rgba(196, 65, 127, 0.35);
+    --radius: 1.75rem;
+    --pad-y: 1.5rem;
+    --pad-x: 1.75rem;
+    --min-width: 18rem;
+    --count-size: 3.75rem;
+    --count-weight: 800;
+    --count-spacing: -0.02em;
+    --fg: #4a2c47;
+    --dim: #75506f;
+    --accent: #c2417f;
+    --warn: #b45309;
+    --capped: #be123c;
+    --track: rgba(196, 65, 127, 0.18);
+    --bar-radius: 999px;
+    --font: ui-rounded, "Hiragino Maru Gothic ProN", Quicksand, "Segoe UI",
+      ui-sans-serif, system-ui, sans-serif;
+  }
+
+  /* Neon: near-black, hard corners, one electric accent and a glow. The glow is
+     a `box-shadow` rather than a `text-shadow` on purpose — see the note on
+     `.count`. This is the theme most likely to be paired with a dark, neon
+     scene, where it disappears into it by design. */
+  body[data-theme="neon"] {
+    --card: rgba(4, 4, 10, 0.94);
+    --card-solid: #04040a;
+    --card-border: 1px solid rgba(0, 229, 255, 0.45);
+    --radius: 0.125rem;
+    --pad-y: 1rem;
+    --pad-x: 1.25rem;
+    --count-size: 3.25rem;
+    --count-weight: 800;
+    --count-spacing: 0.01em;
+    --fg: #f0f6ff;
+    --dim: #7c8aa5;
+    --accent: #00e5ff;
+    --warn: #ffd166;
+    --capped: #ff4d6d;
+    --track: rgba(0, 229, 255, 0.16);
+    --bar-radius: 0.125rem;
+    --glow: 0 0 24px rgba(0, 229, 255, 0.35);
+    --font: "JetBrains Mono", ui-monospace, "Cascadia Mono", Menlo, monospace;
+  }
+
+  /* Mono: greyscale and small, for a channel whose brand is already loud. Every
+     colour is a grey, including the accent — the bar still fills, it just does
+     not draw attention to itself doing it. */
+  body[data-theme="mono"] {
+    --card: rgba(17, 17, 17, 0.9);
+    --card-solid: #111111;
+    --card-border: 1px solid rgba(255, 255, 255, 0.14);
+    --radius: 0.5rem;
+    --pad-y: 0.875rem;
+    --pad-x: 1.25rem;
+    --min-width: 14rem;
+    --count-size: 2.75rem;
+    --count-weight: 600;
+    --fg: #ededed;
+    --dim: #9a9a9a;
+    --accent: #ededed;
+    --warn: #c8c8c8;
+    --capped: #ffffff;
+    --track: rgba(255, 255, 255, 0.16);
+    --bar-radius: 0.25rem;
+    --font: ui-monospace, "JetBrains Mono", Menlo, Consolas, monospace;
+  }
 </style>
 </head>
 <body>
@@ -133,7 +298,7 @@ const OVERLAY_HTML: &str = r##"<!doctype html>
 <div class="card" id="card">
     <div class="status" id="status">yapping</div>
     <div class="count"><span id="words">0</span> <span class="target" id="target"></span></div>
-    <div class="bar"><div class="fill" id="fill" style="width:0%"></div></div>
+    <div class="bar"><div class="fill" id="fill"></div></div>
     <div class="row">
       <span id="remaining"></span>
       <span id="rate"></span>
@@ -174,7 +339,7 @@ function render(state) {
     statusEl.textContent = 'no yapathon';
     wordsEl.textContent = '—';
     targetEl.textContent = '';
-    fillEl.style.width = '0%';
+    fillEl.style.transform = 'scaleX(0)';
     remainingEl.textContent = 'start one from the dock';
     rateEl.textContent = '';
     return;
@@ -205,7 +370,7 @@ function render(state) {
       : '';
   }
 
-  fillEl.style.width = Math.round(state.fraction * 100) + '%';
+  fillEl.style.transform = 'scaleX(' + state.fraction + ')';
 
   // The streamer and chat both need to know the run is over by design rather
   // than stalled, or they will keep extending a goal nothing is counting.
@@ -441,7 +606,7 @@ function render(state) {
   el('target').textContent = isTime
     ? 'left'
     : `/ ${state.target.toLocaleString()} words`;
-  el('fill').style.width = Math.round(state.fraction * 100) + '%';
+  el('fill').style.transform = 'scaleX(' + state.fraction + ')';
   el('remaining').textContent = isTime
     ? `${state.utterances} utterances`
     : state.remaining.toLocaleString();
@@ -597,7 +762,7 @@ boot();
 /// page and something in it does not render" — two problems that look identical
 /// from the outside and need opposite fixes.
 pub async fn serve_overlay(
-    State(_state): State<Arc<AppState>>,
+    State(state): State<Arc<AppState>>,
     raw: axum::extract::RawQuery,
 ) -> Response {
     // Parsed by hand rather than through a `Query<Params>` extractor.
@@ -611,17 +776,30 @@ pub async fn serve_overlay(
     // empty one for our purposes.
     let query = raw.0.as_deref().unwrap_or("");
 
+    // `?theme=` beats the setting, so a streamer can compare themes by editing
+    // the URL in a browser without touching anything and then copy the one they
+    // want into OBS.
+    let theme = state.overlay_theme(value(query, "theme").as_deref());
+
     let body = if flag(query, "debug") {
         debug_html()
     } else if flag(query, "opaque") {
-        opaque_overlay_html()
+        opaque_overlay_html(Some(&theme))
     } else {
-        OVERLAY_HTML.to_string()
+        overlay_html_themed(&theme)
     };
 
     Html(body)
         .into_response()
         .with_header(header::CACHE_CONTROL, "no-store, max-age=0")
+}
+
+/// The value of a key in a raw query string.
+fn value(query: &str, key: &str) -> Option<String> {
+    query.split('&').find_map(|pair| {
+        let (name, value) = pair.split_once('=')?;
+        (name == key && !value.is_empty()).then(|| value.to_string())
+    })
 }
 
 /// Whether a flag is set in a raw query string.
@@ -651,9 +829,99 @@ pub async fn serve_dock(State(_state): State<Arc<AppState>>) -> Response {
         .with_header(header::CACHE_CONTROL, "no-store, max-age=0")
 }
 
+/// One overlay look.
+///
+/// The CSS lives in [`OVERLAY_HTML`] as `body[data-theme="id"]` rules rather
+/// than being generated from this table. Two sources of truth would drift, so
+/// this table is the one the settings panel and the tests read, and a test
+/// checks that every theme here has a rule in the stylesheet and every rule in
+/// the stylesheet is in here.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct OverlayTheme {
+    /// The value stored in settings and passed as `?theme=`.
+    pub id: &'static str,
+    /// What the settings panel calls it.
+    pub label: &'static str,
+    /// One line on what it is for.
+    pub note: &'static str,
+}
+
+/// Every overlay theme, in the order the settings panel lists them.
+///
+/// `card` is first and is the default: an existing install that has never
+/// heard of themes keeps exactly the card it had.
+pub const OVERLAY_THEMES: &[OverlayTheme] = &[
+    OverlayTheme {
+        id: "card",
+        label: "Card",
+        note: "the default: a dark rounded panel in the bottom-right",
+    },
+    OverlayTheme {
+        id: "minimal",
+        label: "Minimal",
+        note: "square, borderless, quiet, and in the top-left",
+    },
+    OverlayTheme {
+        id: "cute",
+        label: "Cute",
+        note: "pastel and pill-shaped, with a soft rounded font",
+    },
+    OverlayTheme {
+        id: "neon",
+        label: "Neon",
+        note: "hard corners, one electric accent, a glow",
+    },
+    OverlayTheme {
+        id: "mono",
+        label: "Mono",
+        note: "greyscale and small, for a channel that is already loud",
+    },
+];
+
+/// The theme used when nothing is configured.
+pub const DEFAULT_OVERLAY_THEME: &str = "card";
+
+/// Look up a theme by id, falling back to the default.
+///
+/// Falling back rather than failing, because the id comes out of a settings file
+/// a person can edit. An unknown name must not take the overlay down: it is the
+/// only thing on screen during a stream.
+pub fn overlay_theme(id: &str) -> &'static OverlayTheme {
+    OVERLAY_THEMES
+        .iter()
+        .find(|theme| theme.id == id.trim().to_lowercase())
+        .unwrap_or_else(|| {
+            log::warn!("overlay: unknown theme {id:?}, using {DEFAULT_OVERLAY_THEME:?}");
+            overlay_theme_by_id(DEFAULT_OVERLAY_THEME)
+        })
+}
+
+fn overlay_theme_by_id(id: &str) -> &'static OverlayTheme {
+    OVERLAY_THEMES
+        .iter()
+        .find(|theme| theme.id == id)
+        .expect("the default theme is in the table")
+}
+
 /// The overlay markup, exposed for tests.
 pub fn overlay_html() -> &'static str {
     OVERLAY_HTML
+}
+
+/// The overlay markup with a theme applied.
+///
+/// The body carries `data-theme`, which is all the stylesheet keys off — so
+/// every theme is present in the served page and switching is one attribute
+/// rather than a second copy of the CSS.
+pub fn overlay_html_themed(id: &str) -> String {
+    let theme = overlay_theme(id);
+
+    OVERLAY_HTML.replace("<body>", &format!(r#"<body data-theme="{}">"#, theme.id))
+}
+
+/// The overlay markup, for tests.
+pub fn themed_overlay_html(id: &str) -> String {
+    overlay_html_themed(id)
 }
 
 /// The dock markup, exposed for tests.
@@ -666,11 +934,12 @@ pub fn dock_html() -> &'static str {
 /// For a machine where the alpha in `rgba(16,16,20,0.92)` composites to nothing.
 /// The body's transparency is untouched — that is what lets the stream show
 /// through — only the card becomes solid.
-fn opaque_overlay_html() -> String {
-    OVERLAY_HTML.replace(
-        "background: rgba(16, 16, 20, 0.92);",
-        "background: #101014;",
-    )
+fn opaque_overlay_html(theme: Option<&str>) -> String {
+    let html = overlay_html_themed(theme.unwrap_or(DEFAULT_OVERLAY_THEME));
+
+    // The variable holding whatever the chosen theme uses, so this works for a
+    // pastel theme as well as the dark default.
+    html.replace("var(--card);", "var(--card-solid);")
 }
 
 /// Remove CSS and JS comments from a page.
@@ -869,22 +1138,247 @@ mod tests {
     }
 
     #[test]
+    fn the_progress_bar_geometry_belongs_to_the_stylesheet() {
+        // The fill is a full-width element scaled from the left, so filling it is
+        // a compositor transform rather than a layout.
+        //
+        // That broke the moment the markup kept an inline `style="width:0%"`:
+        // an inline style beats the stylesheet, so the element stayed zero wide
+        // and the transform had nothing to scale. The bar rendered as a flat
+        // grey line in every theme, which reads as "the feature is off" rather
+        // than "a percentage is miscomputed" — and it did so silently, in all
+        // five themes at once.
+        let html = overlay_html();
+
+        assert!(
+            !html.contains(r#"id="fill" style="#),
+            "the fill must have no inline style: it would override the stylesheet",
+        );
+        assert!(
+            html.contains("transform: scaleX(0)"),
+            "the fill must start collapsed by transform",
+        );
+        assert!(
+            html.contains("transition: transform"),
+            "the fill must animate a transform, not a width",
+        );
+
+        // And the script must write the same property the stylesheet animates.
+        // Setting `width` while transitioning `transform` is the same bug with
+        // the inline style removed.
+        assert!(
+            html.contains("fillEl.style.transform"),
+            "the fill must be driven by transform",
+        );
+        assert!(
+            !html.contains("fillEl.style.width"),
+            "the fill must not be driven by width",
+        );
+    }
+
+    #[test]
+    fn every_theme_has_a_rule_and_every_rule_has_a_theme() {
+        // The names live in two places: a Rust table the settings panel reads,
+        // and CSS rules in the served page. Two sources of truth drift, and a
+        // theme in one and not the other is either invisible in the panel or
+        // silently impossible to select.
+        let html = overlay_html();
+
+        for theme in OVERLAY_THEMES {
+            assert!(
+                html.contains(&format!(r#"body[data-theme="{}"]"#, theme.id)),
+                "theme {} has no rule in the stylesheet",
+                theme.id,
+            );
+        }
+
+        // And nothing in the stylesheet that the panel cannot offer.
+        for line in html
+            .lines()
+            .filter(|line| line.contains("body[data-theme="))
+        {
+            let quoted = line
+                .split('"')
+                .nth(1)
+                .unwrap_or_else(|| panic!("unparseable theme rule: {line}"));
+            assert!(
+                OVERLAY_THEMES.iter().any(|theme| theme.id == quoted),
+                "{quoted:?} has a stylesheet rule but is not in OVERLAY_THEMES",
+            );
+        }
+    }
+
+    #[test]
+    fn every_theme_can_be_asked_for_and_the_default_is_one_of_them() {
+        for theme in OVERLAY_THEMES {
+            let html = themed_overlay_html(theme.id);
+            assert!(
+                html.contains(&format!(r#"<body data-theme="{}">"#, theme.id)),
+                "{} was not applied to the body",
+                theme.id,
+            );
+        }
+
+        assert!(
+            OVERLAY_THEMES
+                .iter()
+                .any(|theme| theme.id == DEFAULT_OVERLAY_THEME)
+        );
+    }
+
+    #[test]
+    fn an_unknown_theme_falls_back_rather_than_failing() {
+        // The id can come out of a hand-edited settings file. An overlay that
+        // refuses to render is the one failure that cannot happen during a
+        // stream.
+        assert_eq!(overlay_theme("neon").id, "neon");
+        assert_eq!(overlay_theme("NEON").id, "neon");
+        assert_eq!(overlay_theme("  neon  ").id, "neon");
+        assert_eq!(overlay_theme("not-a-theme").id, DEFAULT_OVERLAY_THEME);
+        assert_eq!(overlay_theme("").id, DEFAULT_OVERLAY_THEME);
+    }
+
+    #[test]
+    fn every_theme_is_legible_over_its_own_card() {
+        // The whole point of a theme is that it looks good; the one thing it
+        // cannot do is become unreadable. Every theme's text and accent are
+        // checked against that theme's card colour, at the same 4.5:1 the app
+        // window is held to.
+        //
+        // The `cute` theme is the one this exists for: a pale pastel card with a
+        // pale pink number would have looked charming in a mockup and been
+        // unreadable on a stream.
+        const MINIMUM: f32 = 4.5;
+
+        for theme in OVERLAY_THEMES {
+            let block = theme_rule(theme.id).unwrap_or_else(|| panic!("no rule for {}", theme.id));
+
+            let card = hex_of(&block, "--card-solid")
+                .unwrap_or_else(|| panic!("{}: no opaque card colour", theme.id));
+
+            for property in ["--fg", "--accent", "--dim"] {
+                let colour = hex_of(&block, property)
+                    .unwrap_or_else(|| panic!("{}: {property} is not a hex colour", theme.id));
+                let ratio = contrast(Rgb::from_hex(&colour), Rgb::from_hex(&card));
+
+                assert!(
+                    ratio >= MINIMUM,
+                    "{} theme: {property} on the card is {ratio:.2}:1, below {MINIMUM}:1",
+                    theme.id,
+                );
+            }
+        }
+    }
+
+    /// The body of a theme's CSS rule, without the selector or braces.
+    fn theme_rule(id: &str) -> Option<String> {
+        let html = overlay_html();
+        let start = html.find(&format!(r#"body[data-theme="{id}"] {{"#))?;
+        let rest = &html[start..];
+        let open = rest.find('{')?;
+        let close = rest[open..].find('}')?;
+        Some(rest[open + 1..open + close].to_string())
+    }
+
+    /// The `#rrggbb` value a custom property is given in a block of CSS.
+    fn hex_of(block: &str, property: &str) -> Option<String> {
+        let after = block.split(&format!("{property}:")).nth(1)?;
+        let value = after.trim_start();
+
+        if !value.starts_with('#') {
+            return None;
+        }
+
+        Some(value.chars().take(7).collect())
+    }
+
+    /// A flat RGB colour, from `#rrggbb`.
+    struct Rgb(f32, f32, f32);
+
+    impl Rgb {
+        fn from_hex(value: &str) -> Self {
+            let value = value.trim_start_matches('#');
+            let byte = |index: usize| {
+                u8::from_str_radix(&value[index..index + 2], 16).unwrap_or(0) as f32 / 255.0
+            };
+            Self(byte(0), byte(2), byte(4))
+        }
+    }
+
+    fn luminance(colour: &Rgb) -> f32 {
+        let channel = |value: f32| {
+            if value <= 0.039_28 {
+                value / 12.92
+            } else {
+                ((value + 0.055) / 1.055).powf(2.4)
+            }
+        };
+        0.2126 * channel(colour.0) + 0.7152 * channel(colour.1) + 0.0722 * channel(colour.2)
+    }
+
+    fn contrast(a: Rgb, b: Rgb) -> f32 {
+        let (first, second) = (luminance(&a), luminance(&b));
+        let (lighter, darker) = if first > second {
+            (first, second)
+        } else {
+            (second, first)
+        };
+        (lighter + 0.05) / (darker + 0.05)
+    }
+
+    #[test]
     fn the_overlay_card_has_a_visible_background() {
         // With no blur to fall back on, the card's background is the only thing
         // making it visible. It has to be opaque enough to read over a video.
-        assert!(overlay_html().contains("background: rgba(16, 16, 20, 0.92)"));
+        //
+        // The card reads its colour from `--card`, so this checks both halves:
+        // that the element actually uses the variable, and that every theme
+        // gives it something solid. A theme with a transparent card would render
+        // as bare text over the stream, which is unreadable most of the time.
+        let html = overlay_html();
+        assert!(
+            html.contains("background: var(--card);"),
+            "the card must paint from --card, or theming cannot reach it",
+        );
+
+        for theme in OVERLAY_THEMES {
+            let block = theme_rule(theme.id).expect("a rule");
+            assert!(
+                hex_of(&block, "--card").is_some() || block.contains("--card: rgba("),
+                "{}: --card must not be transparent",
+                theme.id,
+            );
+            assert!(
+                hex_of(&block, "--card-solid").is_some(),
+                "{}: no opaque card, so ?opaque cannot work for it",
+                theme.id,
+            );
+        }
     }
 
     #[test]
     fn the_opaque_variant_has_no_alpha() {
         // For a GPU path where alpha composites to nothing. The body's
         // transparency is untouched — that is what shows the stream through.
-        let opaque = opaque_overlay_html();
+        let opaque = opaque_overlay_html(None);
 
-        assert!(opaque.contains("background: #101014"));
+        // The card paints from `--card-solid` in this variant, and every theme
+        // supplies a fully opaque value for it.
+        assert!(opaque.contains("background: var(--card-solid);"));
+
+        for theme in OVERLAY_THEMES {
+            let themed = opaque_overlay_html(Some(theme.id));
+            assert!(
+                themed.contains("background: var(--card-solid);"),
+                "{}: ?opaque did not take effect",
+                theme.id,
+            );
+        }
+        // The translucent value still exists as an unused declaration, which is
+        // fine; what must not survive is anything *painting* from it.
         assert!(
-            !opaque.contains("rgba(16, 16, 20, 0.92)"),
-            "the card's alpha must be gone in the opaque variant"
+            !opaque.contains("background: var(--card);"),
+            "the card must not paint from the translucent variable in the opaque variant"
         );
         assert!(
             opaque.contains("background: transparent"),

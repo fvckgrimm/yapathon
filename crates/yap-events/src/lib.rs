@@ -80,8 +80,35 @@ impl WordRate {
 
 /// Look up the word value for an event, honouring the rate for its kind.
 ///
-/// `flat` is the configured value for `<platform>:<kind>`. When a kind pays per
-/// unit of platform amount — bits, mostly — the amount scales it.
+/// The configured value for `<platform>:<kind>`, and the event's platform-native
+/// amount, priced into words.
+///
+/// ## The whole pricing rule
+///
+/// **`amount` present means scale by it. Absent means flat.**
+///
+/// That is the entire rule, and it lives here rather than in a per-kind table
+/// because the table was the problem. `is_per_unit` used to hardcode
+/// `cheer | gift_sub`, which is per-platform knowledge in shared code: adding
+/// YouTube meant editing this function to know what a Super Chat was, and
+/// getting it wrong meant a Super Chat was priced as if it were a flat grant no
+/// matter how much someone actually spent.
+///
+/// Under this rule the *sender* decides, because the sender is the only thing
+/// that knows what its amount means:
+///
+/// - a cheer sends its bits — `1` word per bit, so 2500 bits is 2500 words
+/// - a gift bomb sends the sub count — 100 gifted subs is 100 × the per-sub price
+/// - a plain sub sends nothing, because it is one sub and the price is flat
+/// - a raid sends nothing by default, but *can* send its viewer count to be
+///   worth something per raider, which is a real pricing choice streamers make
+///
+/// So a new platform needs no changes here at all.
+///
+/// `amount` is `None` for genuinely flat events, and callers that cannot read a
+/// size they need should send `Some(0.0)` rather than `None` — "we know this is
+/// a batch and we failed to learn how big" and "this is a single event" are
+/// different facts, and only one of them should pay out.
 pub fn price_event(
     platform: &str,
     kind: &str,
@@ -89,21 +116,8 @@ pub fn price_event(
     amount: Option<f64>,
     configured: Option<u32>,
 ) -> Event {
-    // A per-unit rate is expressed in settings as the value for one unit, and a
-    // separate table scales by amount. Keeping one flat value per kind means a
-    // streamer prices a cheer at "words per 100 bits" without the core needing
-    // to know what a bit is.
-    let words: Option<u32> = match (configured, amount) {
-        // A per-unit kind with no amount is an event whose size we failed to
-        // read. Granting the rate as though the amount were 1 would hand out a
-        // single word for an unknown-size cheer, which is worse than nothing.
-        (Some(per_unit), Some(amount)) if is_per_unit(kind) => {
-            Some(WordRate::per(per_unit).words_for(amount))
-        }
-        (Some(_), None) if is_per_unit(kind) => Some(0),
-        (Some(words), _) => Some(words),
-        (None, _) => None,
-    };
+    let words: Option<u32> =
+        configured.map(|each| WordRate::per(each).words_for(amount.unwrap_or(1.0)));
 
     Event {
         platform: platform.to_string(),
@@ -113,21 +127,6 @@ pub fn price_event(
         words,
         note: None,
     }
-}
-
-/// Kinds whose configured value is a rate per unit rather than a flat grant.
-///
-/// Cheered bits is the only one: 100 bits and 1000 bits are both just "bits",
-/// and pricing them identically would make big cheers pointless.
-/// Whether a kind's configured value is *per unit* rather than a flat total.
-///
-/// A cheer is priced per bit and a gift per sub, because "100 gifted subs"
-/// arrives as one notification carrying a quantity and has to be worth a
-/// hundred times what one sub is worth. Pricing those flat makes a gift bomb
-/// and a big cheer worth the same as the smallest of either, which reads as the
-/// app being broken rather than as a pricing choice.
-fn is_per_unit(kind: &str) -> bool {
-    matches!(kind, "cheer" | "gift_sub")
 }
 
 #[cfg(test)]
@@ -146,15 +145,34 @@ mod tests {
     }
 
     #[test]
-    fn a_flat_value_applies_regardless_of_amount() {
-        let e = price_event(
-            "twitch",
-            "resub",
-            Some("someone".into()),
-            Some(12.0),
-            Some(100),
-        );
+    fn no_amount_means_the_price_is_flat() {
+        // A kind that is one event whatever it contains — a sub, a resub, a
+        // redemption — sends no amount, and the configured value is the whole
+        // award. Nothing here knows which kinds those are.
+        let e = price_event("twitch", "resub", Some("someone".into()), None, Some(100));
         assert_eq!(e.words, Some(100));
+    }
+
+    #[test]
+    fn any_kind_scales_when_the_sender_supplies_an_amount() {
+        // The old rule had a table of which kinds scale, so a platform this file
+        // had never heard of could not be priced correctly no matter what it
+        // sent. Now the sender decides, and the only test that matters is that
+        // the core does not second-guess it.
+        for kind in ["resub", "raid", "superchat", "whatever_a_bridge_invents"] {
+            let e = price_event("somewhere", kind, None, Some(12.0), Some(100));
+            assert_eq!(e.words, Some(1_200), "{kind} did not scale");
+        }
+    }
+
+    #[test]
+    fn an_unreadable_batch_is_worth_nothing_rather_than_one_of_its_contents() {
+        // `Some(0.0)` means "we know this is a batch and could not learn how
+        // big". `None` means "this is a single event". Conflating them is how a
+        // notification that failed to parse hands out free words.
+        let e = price_event("twitch", "gift_sub", None, Some(0.0), Some(50));
+        assert_eq!(e.words, Some(0));
+        assert_eq!(e.granted_words(), 0);
     }
 
     #[test]

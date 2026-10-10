@@ -12,6 +12,127 @@
 use gpui::{App, Hsla, hsla};
 use gpui_kit::component::theme::ActiveTheme as _;
 
+/// A named accent colour.
+///
+/// A small set rather than a free colour picker, deliberately. Almost nobody
+/// picks a custom accent, and the ones who do usually want "the purple from my
+/// channel's logo" — which is what the presets are for. A picker would also need
+/// a contrast story for every arbitrary colour someone drags into it, and the
+/// one thing an accent has to do is stay readable in both themes.
+///
+/// Each is a hue pair: a light value for dark panels, a deeper one for light
+/// panels. Both are checked against the surfaces in both themes by a test, so a
+/// preset cannot be added that is unreadable.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Accent {
+    #[default]
+    Teal,
+    Green,
+    Pink,
+    Purple,
+    Amber,
+    Blue,
+    /// The channel is already colourful; the app should not add to it.
+    Mono,
+}
+
+impl Accent {
+    pub const ALL: [Accent; 7] = [
+        Self::Teal,
+        Self::Green,
+        Self::Pink,
+        Self::Purple,
+        Self::Amber,
+        Self::Blue,
+        Self::Mono,
+    ];
+
+    /// The value stored in settings.
+    pub fn id(self) -> &'static str {
+        match self {
+            Self::Teal => "teal",
+            Self::Green => "green",
+            Self::Pink => "pink",
+            Self::Purple => "purple",
+            Self::Amber => "amber",
+            Self::Blue => "blue",
+            Self::Mono => "mono",
+        }
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Teal => "Teal",
+            Self::Green => "Green",
+            Self::Pink => "Pink",
+            Self::Purple => "Purple",
+            Self::Amber => "Amber",
+            Self::Blue => "Blue",
+            Self::Mono => "Monochrome",
+        }
+    }
+
+    /// Read an accent by id, falling back to the default.
+    ///
+    /// The id comes out of a settings file a person can edit, so an unknown one
+    /// must not take the palette down with it.
+    pub fn from_id(id: &str) -> Self {
+        Self::ALL
+            .into_iter()
+            .find(|accent| accent.id() == id.trim().to_lowercase())
+            .unwrap_or_default()
+    }
+
+    /// The colour used on a dark panel.
+    pub fn on_dark(self) -> Hsla {
+        match self {
+            Self::Teal => hsla(0.514, 0.85, 0.62, 1.0),
+            Self::Green => hsla(0.370, 0.80, 0.62, 1.0),
+            Self::Pink => hsla(0.930, 0.75, 0.72, 1.0),
+            Self::Purple => hsla(0.740, 0.80, 0.74, 1.0),
+            Self::Amber => hsla(0.110, 0.90, 0.66, 1.0),
+            Self::Blue => hsla(0.580, 0.85, 0.70, 1.0),
+            Self::Mono => hsla(0.000, 0.00, 0.93, 1.0),
+        }
+    }
+
+    /// The colour used on a light panel.
+    pub fn on_light(self) -> Hsla {
+        match self {
+            Self::Teal => hsla(0.514, 0.72, 0.29, 1.0),
+            Self::Green => hsla(0.370, 0.70, 0.28, 1.0),
+            Self::Pink => hsla(0.930, 0.70, 0.34, 1.0),
+            Self::Purple => hsla(0.740, 0.70, 0.38, 1.0),
+            Self::Amber => hsla(0.110, 0.80, 0.30, 1.0),
+            Self::Blue => hsla(0.580, 0.75, 0.32, 1.0),
+            Self::Mono => hsla(0.625, 0.15, 0.10, 1.0),
+        }
+    }
+}
+
+/// The accent in force, set once at startup from settings.
+///
+/// A process-wide value rather than something threaded through every `Theme::*`
+/// call, for the same reason `Appearance` is resolved once: the window is one
+/// palette for the whole session and the alternative is a parameter on roughly
+/// forty call sites. Changing it means Save plus a restart, which the settings
+/// panel says.
+static ACCENT: std::sync::OnceLock<Accent> = std::sync::OnceLock::new();
+
+/// Choose the accent. First call wins.
+///
+/// The first-call-wins part is deliberate rather than an oversight: the window is
+/// built before any settings can be saved, so there is no second chance to
+/// change this within a run anyway.
+pub fn set_accent(accent: Accent) {
+    let _ = ACCENT.set(accent);
+}
+
+/// The accent in force.
+pub fn accent() -> Accent {
+    ACCENT.get().copied().unwrap_or_default()
+}
+
 /// Which palette to use.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Appearance {
@@ -110,13 +231,13 @@ impl Theme {
             // elsewhere, which are not. The accent is one colour used at a dozen
             // sizes, so it has to clear the body-text bar everywhere rather than
             // relying on each call site being large.
-            hsla(0.514, 0.85, 0.62, 1.0)
+            accent().on_dark()
         } else {
             // Darker for the same reason as the dark-mode value, in the other
             // direction: on a near-white window a mid-lightness teal measures
             // 3.6:1, which is the count sitting at the exact moment a streamer
             // looks at it.
-            hsla(0.514, 0.72, 0.29, 1.0)
+            accent().on_light()
         }
     }
 
@@ -375,6 +496,75 @@ mod tests {
                 "{label} theme: {name} is {ratio:.2}:1, below the {MINIMUM_CONTRAST}:1 minimum",
             );
         }
+    }
+
+    #[gpui_kit::test]
+    fn every_accent_is_readable_in_both_themes() {
+        // Seven presets x two themes, against the surfaces each is used on. A
+        // preset that only reads in dark mode is the kind of thing that ships
+        // fine on the machine it was picked on and is unreadable on the other.
+        //
+        // Computed from the accent functions rather than read out of a window, so
+        // this runs with no display and covers presets that are not selected.
+        const MINIMUM: f32 = 4.5;
+
+        for preset in Accent::ALL {
+            for (theme, dark) in [("dark", true), ("light", false)] {
+                // The window background in each theme: near-black and near-white.
+                let surface = if dark {
+                    gpui::Rgba {
+                        r: 0.043,
+                        g: 0.047,
+                        b: 0.063,
+                        a: 1.0,
+                    }
+                } else {
+                    gpui::Rgba {
+                        r: 0.976,
+                        g: 0.976,
+                        b: 0.980,
+                        a: 1.0,
+                    }
+                };
+
+                let colour = if dark {
+                    preset.on_dark()
+                } else {
+                    preset.on_light()
+                }
+                .to_rgb();
+
+                let ratio = contrast_ratio(colour, surface);
+                assert!(
+                    ratio >= MINIMUM,
+                    "{} accent on {theme} is {ratio:.2}:1, below {MINIMUM}:1",
+                    preset.id(),
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn every_accent_round_trips_through_its_id() {
+        // The id is what the settings file stores, so a preset whose name does
+        // not survive the trip would silently become the default one.
+        for preset in Accent::ALL {
+            assert_eq!(Accent::from_id(preset.id()), preset);
+        }
+
+        assert_eq!(Accent::from_id("PINK"), Accent::Pink);
+        assert_eq!(Accent::from_id("  purple "), Accent::Purple);
+        assert_eq!(Accent::from_id("chartreuse"), Accent::default());
+        assert_eq!(Accent::from_id(""), Accent::default());
+    }
+
+    #[test]
+    fn accent_ids_are_unique() {
+        let mut seen = std::collections::HashSet::new();
+        for preset in Accent::ALL {
+            assert!(seen.insert(preset.id()), "duplicate accent id");
+        }
+        assert_eq!(seen.len(), Accent::ALL.len());
     }
 
     #[gpui_kit::test]

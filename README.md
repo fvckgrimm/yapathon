@@ -218,6 +218,39 @@ on window-close blanked the overlay mid-stream for anyone who closed the window
 to get it out of the way. Stop the app from the terminal or your window manager
 when you are done.
 
+## Looks
+
+Both the window and the overlay are themeable, and neither requires anything to
+be installed to try one.
+
+**The overlay** — what viewers see. Five looks, set in Settings → Server, or
+previewed one at a time by editing the URL:
+
+```
+http://127.0.0.1:8973/overlay?theme=minimal
+```
+
+| Theme | What it is |
+| ----- | ---------- |
+| `card` | the default: a dark rounded panel, bottom-right |
+| `minimal` | square, borderless, quiet, top-left |
+| `cute` | pastel and pill-shaped |
+| `neon` | hard corners, one electric accent, a glow |
+| `mono` | greyscale and small |
+
+`?theme=` beats the setting, so comparing looks means editing a URL in a browser
+and copying the winner into OBS. `?opaque=1` still works on every theme, for a
+GPU path where the card's alpha composites to nothing.
+
+**The window** — Settings → Server → Accent colour: teal, green, pink, purple,
+amber, blue, or mono. Light and dark are separate.
+
+Both take effect on the next launch. Every colour in both is checked against the
+surface it sits on at 4.5:1 or better, in both light and dark — a test, not an
+opinion. That check is why the pastel theme's muted text is a deep mauve rather
+than the pale pink it started as, and why the dark theme's accent is lighter than
+the eye first reaches for.
+
 ## Settings
 
 Three UIs, and two of them are not the window:

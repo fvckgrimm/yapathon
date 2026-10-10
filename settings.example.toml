@@ -30,6 +30,26 @@
 bind_address = "127.0.0.1"
 port = 8973
 
+# --- How it looks ----------------------------------------------------------
+#
+# The window's accent colour, and which overlay OBS is served. Both take effect
+# on the next launch — the window's palette is chosen before it opens, and OBS
+# reads the overlay once when the source is created.
+#
+# accent: teal (default), green, pink, purple, amber, blue, mono
+#   "mono" is for a channel that is already colourful and does not want the app
+#   adding to it.
+accent = "teal"
+#
+# "auto", "dark" or "light". "auto" follows the desktop where it can be asked,
+# and is dark where it cannot.
+appearance = "auto"
+#
+# overlay theme: card (default), minimal, cute, neon, mono
+#   To compare them without changing anything, open
+#   http://127.0.0.1:8973/overlay?theme=cute in a browser and edit the name.
+overlay_theme = "card"
+
 # --- Where to put the model ------------------------------------------------
 #
 # Download a ggml model and either leave this at the default and put the file in

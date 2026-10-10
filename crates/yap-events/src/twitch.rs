@@ -116,6 +116,13 @@ pub struct TwitchPricing {
 }
 
 impl TwitchPricing {
+    /// Prices from a `<platform>:<kind>` map, as the settings file stores it.
+    ///
+    /// Unprefixed kinds in, because a platform's pricing is its own concern.
+    pub fn from_words(words: std::collections::BTreeMap<String, u32>) -> Self {
+        Self { words }
+    }
+
     pub fn get(&self, kind: &str) -> Option<u32> {
         self.words.get(kind).copied()
     }
@@ -202,23 +209,6 @@ impl EventBody {
     }
 }
 
-/// How many platform-native units an event represents.
-///
-/// `None` for kinds whose size is one event regardless — a subscribe is one
-/// subscribe whether or not anyone says otherwise.
-fn event_amount(kind: &str, body: Option<&EventBody>) -> Option<f64> {
-    let body = body?;
-
-    let units = match kind {
-        "cheer" => body.bits,
-        "gift_sub" => body.cumulative_total,
-        "raid" => body.viewers,
-        _ => None,
-    };
-
-    units.map(|units| units as f64)
-}
-
 /// Convert an EventSub notification into a priced event.
 ///
 /// # Errors
@@ -238,9 +228,28 @@ pub fn notification_to_event(
     // correct afterwards.
     let subscription = &notification.payload.subscription;
     let kind = short_kind(&subscription.kind);
-    let amount = event_amount(kind, subscription.event.as_ref());
+    let amount = amount_for(kind, subscription.event.as_ref());
 
     Ok(price_event("twitch", kind, None, amount, pricing.get(kind)))
+}
+
+/// The amount this event should be priced by.
+///
+/// `None` for kinds that are one event whatever they contain, so the configured
+/// value is a flat grant. `Some(0.0)` for a kind whose size we need and failed
+/// to read — a gift bomb with no body is not "one sub", and paying the single-sub
+/// price for an unknown number of them is how a notification we failed to parse
+/// turns into free words.
+///
+/// Twitch does not carry a viewer count on the raid notification we handle, so a
+/// raid is flat. Pricing raids per raider is a real choice streamers make, so it
+/// belongs in the settings and the body rather than being decided here.
+fn amount_for(kind: &str, body: Option<&EventBody>) -> Option<f64> {
+    match kind {
+        "cheer" => Some(body.and_then(|body| body.bits).unwrap_or(0) as f64),
+        "gift_sub" => Some(body.and_then(|body| body.cumulative_total).unwrap_or(0) as f64),
+        _ => None,
+    }
 }
 
 /// A live Twitch connection.
@@ -282,19 +291,19 @@ impl TwitchPlatform {
     /// Names the service when nothing is stored, because "no token" is the most
     /// common reason this platform does not work and it should not present as a
     /// network failure.
-    pub fn from_keyring(channel: String, service: &str, client_id: &str) -> Result<Self> {
+    pub fn from_keyring(
+        channel: String,
+        service: &str,
+        client_id: &str,
+        pricing: TwitchPricing,
+    ) -> Result<Self> {
         let entry =
             keyring::Entry::new(service, KEYRING_USER).context("credential store unavailable")?;
         let token = entry
             .get_password()
             .with_context(|| format!("no stored Twitch token for {service}"))?;
 
-        Ok(Self::new(
-            channel,
-            token,
-            client_id.to_string(),
-            TwitchPricing::default(),
-        ))
+        Ok(Self::new(channel, token, client_id.to_string(), pricing))
     }
 
     /// Store a user token for later use.

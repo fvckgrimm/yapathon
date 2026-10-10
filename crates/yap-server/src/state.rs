@@ -46,6 +46,12 @@ pub struct AppState {
     listening: RwLock<bool>,
     /// Warnings worth showing but not worth stopping for.
     warnings: RwLock<Vec<String>>,
+    /// Which overlay look to serve.
+    ///
+    /// Held here rather than read from settings at request time because the
+    /// overlay must render with no filesystem access on the hot path, and because
+    /// `?theme=` needs a fallback to compare against.
+    overlay_theme: RwLock<String>,
 }
 
 impl Default for AppState {
@@ -64,7 +70,77 @@ impl AppState {
             recent_events: RwLock::new(Vec::new()),
             listening: RwLock::new(false),
             warnings: RwLock::new(Vec::new()),
+            overlay_theme: RwLock::new(yap_core::settings::default_overlay_theme()),
         }
+    }
+
+    /// The overlay theme to serve, given `override` if the request asked for one.
+    ///
+    /// An unknown name falls back rather than failing: the id can come out of a
+    /// hand-edited settings file or a mistyped query, and the overlay is the one
+    /// thing that has to work during a stream.
+    pub fn overlay_theme(&self, requested: Option<&str>) -> String {
+        let chosen = requested.map(str::to_string).unwrap_or_else(|| {
+            self.overlay_theme
+                .try_read()
+                .map(|t| t.clone())
+                .unwrap_or_default()
+        });
+
+        crate::overlay::overlay_theme(&chosen).id.to_string()
+    }
+
+    /// Set the theme served when the request does not ask for one.
+    pub fn set_overlay_theme(&self, theme: &str) {
+        if let Ok(mut guard) = self.overlay_theme.try_write() {
+            *guard = crate::overlay::overlay_theme(theme).id.to_string();
+        }
+    }
+
+    /// Publish the current snapshot once a second, for as long as this lives.
+    ///
+    /// ## Why this exists
+    ///
+    /// Snapshots are published on mutation, and every mutation is something
+    /// somebody *did* — a word was counted, a sub arrived, the run was paused.
+    /// Elapsed time is not something anybody did. It is `started.elapsed()`,
+    /// read fresh whenever a snapshot is built, so it changes every second
+    /// whether or not anything else does.
+    ///
+    /// With nothing publishing on a clock, a running yapathon showed a frozen
+    /// timer on the overlay and in the window, and a frozen words-per-minute,
+    /// and updated only when the streamer happened to say something. Chat and
+    /// counts moved, so it looked like a rendering bug rather than a missing
+    /// heartbeat — and refreshing "fixed" it, which is the worst possible
+    /// symptom, because it tells you the data is real.
+    ///
+    /// Once a second is the interval because that is the resolution of anything
+    /// displayed: the overlay shows `m:ss`, so a faster tick would publish
+    /// snapshots nobody can tell apart. `apply` in the window compares
+    /// snapshots before repainting, so a tick that lands on the same second
+    /// costs nothing.
+    pub fn start_ticker(self: &Arc<Self>) {
+        let state = Arc::clone(self);
+
+        tokio::spawn(async move {
+            let mut ticker = tokio::time::interval(std::time::Duration::from_secs(1));
+
+            // The first tick fires immediately; the session may not exist yet and
+            // the tick is a no-op then anyway.
+            loop {
+                ticker.tick().await;
+
+                // No session means nothing to say, and no session is the state
+                // for most of the app's life.
+                let Some(snapshot) = state.snapshot().await else {
+                    continue;
+                };
+
+                // Not bumped: nothing changed, this is a clock. The revision is
+                // how a consumer tells a real edit from a re-read.
+                let _ = state.updates.send(snapshot);
+            }
+        });
     }
 
     /// Wrap in an `Arc` for sharing across tasks.
@@ -280,6 +356,60 @@ mod tests {
 
     fn config() -> SessionConfig {
         SessionConfig::new(GoalMode::Fixed { words: 100 }, None)
+    }
+
+    #[tokio::test]
+    async fn a_running_session_publishes_a_moving_clock() {
+        // The symptom this fixes: the count and the chat updated but the timer,
+        // the words-per-minute and "to go" sat frozen, and only a manual refresh
+        // moved them.
+        //
+        // Snapshots used to be published on mutation only. Elapsed time is
+        // `started.elapsed()` read at snapshot time, so it changes every second
+        // without anybody doing anything — and with nothing publishing, a silent
+        // yapathon looked identical to a broken one. Chat still moved, which is
+        // what made it read as a rendering bug rather than a missing heartbeat.
+        let state = AppState::shared();
+        let mut updates = state.subscribe();
+
+        state.start_session(config()).await.expect("start");
+        state.start_ticker();
+
+        // Drain what has already been published. `recv` hands back buffered
+        // messages instantly, so without this the two "consecutive" snapshots
+        // are the first two ticks from startup and the test measures the tick
+        // phase rather than the clock.
+        while updates.try_recv().is_ok() {}
+
+        let first = updates.recv().await.expect("a tick");
+        let second = updates.recv().await.expect("another tick");
+
+        assert!(
+            second.elapsed_secs > first.elapsed_secs,
+            "elapsed did not move: {} then {}",
+            first.elapsed_secs,
+            second.elapsed_secs,
+        );
+        assert_eq!(
+            first.words, second.words,
+            "nothing was said, so the count must be the same — only the clock moves",
+        );
+    }
+
+    #[tokio::test]
+    async fn the_ticker_is_quiet_when_there_is_no_session() {
+        // Most of the app's life has no run going. A ticker that published
+        // forever would repaint the window forever for nothing.
+        let state = AppState::shared();
+        let mut updates = state.subscribe();
+
+        state.start_ticker();
+        tokio::time::sleep(std::time::Duration::from_millis(1_250)).await;
+
+        assert!(
+            updates.try_recv().is_err(),
+            "a tick with no session should publish nothing",
+        );
     }
 
     #[tokio::test]

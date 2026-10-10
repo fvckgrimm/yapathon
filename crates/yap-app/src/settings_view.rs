@@ -173,6 +173,9 @@ fn field_value(settings: &yap_core::settings::Settings, field: &Field) -> String
         // the keys are `platform:kind` and the schema keys are
         // `event_platform_kind`, so the two can be written next to each other
         // here instead of being kept in step across three files.
+        "accent" => settings.accent.clone(),
+        "appearance" => settings.appearance.clone(),
+        "overlay_theme" => settings.overlay_theme.clone(),
         "event_twitch_sub" => words_for(settings, "twitch:sub"),
         "event_twitch_resub" => words_for(settings, "twitch:resub"),
         "event_twitch_gift_sub" => words_for(settings, "twitch:gift_sub"),
@@ -898,6 +901,15 @@ fn apply_field(settings: &mut yap_core::settings::Settings, field: &Field, raw: 
         // who blanks a price means to stop that event extending the goal, and
         // silently keeping the old value would leave chat able to move a number
         // the streamer believes is fixed.
+        // Trimmed and lower-cased rather than taken verbatim, because a
+        // mistyped theme must fall back to the default and not to a blank card.
+        // `overlay_theme` resolves unknown names, so a typo here is harmless.
+        // Both resolve an unknown name to the default rather than failing, so
+        // these are assigned verbatim: a typo should not be able to lose the
+        // rest of the save.
+        "accent" => settings.accent = trimmed.to_lowercase(),
+        "appearance" => settings.appearance = trimmed.to_lowercase(),
+        "overlay_theme" => settings.overlay_theme = trimmed.to_lowercase(),
         "event_twitch_sub"
         | "event_twitch_resub"
         | "event_twitch_gift_sub"
@@ -1114,6 +1126,168 @@ fn engine_section() -> usize {
 mod tests {
     use super::*;
     use yap_core::settings::{Settings, default_model_path};
+
+    #[test]
+    fn the_overlay_theme_the_panel_offers_is_the_one_that_renders() {
+        // The picker offers `card, minimal, cute, neon, mono`. If `yap-server`
+        // gains or loses a theme, this fails rather than the panel offering a
+        // button that silently does nothing — which is the failure mode this
+        // project keeps meeting.
+        let offered: Vec<&str> = SETTINGS_SECTIONS
+            .iter()
+            .flat_map(|section| section.fields.iter())
+            .find(|field| field.key == "overlay_theme")
+            .map(|field| field.options.to_vec())
+            .expect("an overlay theme field");
+
+        let real: Vec<&str> = yap_server::overlay::OVERLAY_THEMES
+            .iter()
+            .map(|theme| theme.id)
+            .collect();
+
+        assert_eq!(
+            offered, real,
+            "the settings picker and the served overlay must offer the same themes",
+        );
+    }
+
+    #[test]
+    fn a_chosen_overlay_theme_reaches_the_page() {
+        // End to end: set it through the panel, resolve it the way the server
+        // does, and check the served markup carries it.
+        let field = SETTINGS_SECTIONS
+            .iter()
+            .flat_map(|section| section.fields.iter())
+            .find(|field| field.key == "overlay_theme")
+            .copied()
+            .expect("an overlay theme field");
+
+        let mut settings = Settings::default();
+        assert!(apply_field(&mut settings, &field, "  Neon  "));
+
+        let state = yap_server::AppState::shared();
+        state.set_overlay_theme(&settings.overlay_theme);
+
+        assert_eq!(state.overlay_theme(None), "neon");
+        assert!(
+            yap_server::overlay::themed_overlay_html(&state.overlay_theme(None))
+                .contains(r#"<body data-theme="neon">"#),
+        );
+    }
+
+    #[test]
+    fn a_nonsense_overlay_theme_still_serves_something() {
+        // A hand-edited settings file must not be able to blank the one thing
+        // that is on screen during a stream.
+        let state = yap_server::AppState::shared();
+        state.set_overlay_theme("not-a-real-theme");
+
+        assert_eq!(state.overlay_theme(None), "card");
+        assert!(
+            yap_server::overlay::themed_overlay_html(&state.overlay_theme(None))
+                .contains(r#"<body data-theme="card">"#)
+        );
+    }
+
+    #[test]
+    fn a_url_can_override_the_theme_without_touching_settings() {
+        // How a streamer compares looks: open the URL in a browser, edit the
+        // query, pick one. Copying it into OBS then needs no further setup.
+        let state = yap_server::AppState::shared();
+        state.set_overlay_theme("card");
+
+        assert_eq!(state.overlay_theme(Some("cute")), "cute");
+        assert_eq!(
+            state.overlay_theme(None),
+            "card",
+            "the setting is unchanged"
+        );
+    }
+
+    #[test]
+    fn the_pricing_the_panel_edits_is_the_pricing_the_platform_uses() {
+        // The Events section used to be decorative.
+        //
+        // It read and wrote `settings.event_words`, looked authoritative, and
+        // nothing ever read it back: `TwitchPlatform` was built with
+        // `TwitchPricing::default()` — hardcoded numbers that happened to match
+        // the defaults. A streamer could set a gift sub to 1, hit Save, and see
+        // no change and no error.
+        //
+        // This closes the loop the whole way: edit through the panel, take what
+        // the platform would actually be built with, and price an event by it.
+        let mut settings = Settings::default();
+
+        let field = SETTINGS_SECTIONS
+            .iter()
+            .flat_map(|section| section.fields.iter())
+            .find(|field| field.key == "event_twitch_gift_sub")
+            .copied()
+            .expect("a gift price field");
+
+        assert!(apply_field(&mut settings, &field, "7"));
+
+        let pricing = yap_events::TwitchPricing::from_words(settings.pricing_for("twitch"));
+        let event = yap_events::price_event(
+            "twitch",
+            "gift_sub",
+            None,
+            Some(100.0),
+            pricing.get("gift_sub"),
+        );
+
+        assert_eq!(
+            event.words,
+            Some(700),
+            "100 gifted subs at the price the panel was just given",
+        );
+    }
+
+    #[test]
+    fn an_event_with_no_price_grants_nothing() {
+        // Deleting a key must mean "this event is worth nothing", not "fall back
+        // to a default". Chat must not be able to move a goal through a kind the
+        // streamer has not agreed to pay for.
+        let mut settings = Settings::default();
+        let field = SETTINGS_SECTIONS
+            .iter()
+            .flat_map(|section| section.fields.iter())
+            .find(|field| field.key == "event_twitch_raid")
+            .copied()
+            .expect("a raid price field");
+
+        assert!(apply_field(&mut settings, &field, ""));
+        let pricing = yap_events::TwitchPricing::from_words(settings.pricing_for("twitch"));
+
+        assert_eq!(pricing.get("raid"), None);
+        let event = yap_events::price_event("twitch", "raid", None, None, pricing.get("raid"));
+        assert_eq!(event.granted_words(), 0);
+    }
+
+    #[test]
+    fn pricing_is_split_by_platform() {
+        // `pricing_for` hands one platform its own half of the table. If it ever
+        // handed over everything, Twitch would start answering to YouTube's
+        // prices.
+        let settings = Settings {
+            event_words: [
+                ("twitch:cheer".to_string(), 1),
+                ("youtube:superchat".to_string(), 10),
+                ("chat:command".to_string(), 100),
+            ]
+            .into_iter()
+            .collect(),
+            ..Settings::default()
+        };
+
+        let twitch = settings.pricing_for("twitch");
+        assert_eq!(twitch.len(), 1);
+        assert_eq!(twitch.get("cheer"), Some(&1));
+
+        let youtube = settings.pricing_for("youtube");
+        assert_eq!(youtube.len(), 1);
+        assert_eq!(youtube.get("superchat"), Some(&10));
+    }
 
     #[test]
     fn every_event_the_core_prices_has_a_field() {
