@@ -105,9 +105,48 @@ topic the docs are actually accurate about.
   how gift-bomb members are grouped, nor `activityId`/`_id`, which are the
   dedup keys.
 
-Still unproven: **every event in the test dump was `isMock: true`** — StreamElements'
-own test events, not real viewer activity. The schema is confirmed; real traffic
-is not. And no YouTube events were captured, so the subscriber question stands.
+### YouTube, measured the same way
+
+A **separate JWT is required per platform account**, and it changes the room:
+
+| run | room | provider seen |
+| --- | --- | --- |
+| Twitch JWT | `5e7439a0…` | twitch |
+| YouTube JWT | `6acac21e…` | youtube |
+
+The probe subscribed with no room and the server returned the canonical one, so
+this was discovered rather than configured. Two accounts means two JWTs, which
+means either two connections or one connection carrying two subscriptions with
+different tokens — worth testing, since the subscribe frame carries its own
+`data.token`.
+
+| activity | `data.data` carries |
+| --- | --- |
+| `superchat` | `amount` = money |
+| `sponsor` | `amount` — a channel **membership** |
+| `subscriber` | nothing — a channel **subscriber** |
+| `tip` | `amount` |
+| `merch` | `amount`, `price`, `quantity`, `items` |
+
+**`subscriber/youtube` fires.** That is the whole ballgame: the native YouTube
+Live Streaming API has no follow notification anywhere, so this is the one event
+an Astro-connected channel gets that a native YouTube one never can. Note that
+`sponsor` (membership) and `subscriber` are distinct here, which is exactly the
+distinction the native API makes too — for memberships.
+
+### Still unproven
+
+- **Every event in every dump is `isMock: true`.** All four runs used the
+  widget simulator. The schema is confirmed for both platforms; real traffic is
+  not.
+- **No currency, anywhere.** `currency` appears zero times across all 60 frames,
+  on both platforms, on both topics. `superchat.amount` is a bare number, so
+  €5 and $5 would price identically. A cross-streaming streamer who prices
+  "per dollar" would get this wrong for anyone not paying in dollars.
+- **`channel.chat.message` never fired** — zero events in all four runs. Chat
+  commands are how `!yap` works, so this needs confirming with a real stream;
+  the simulator may simply not send chat.
+- **The JWT's lifetime is unknown.** No run has lasted long enough to find out.
 
 ## Notes
 

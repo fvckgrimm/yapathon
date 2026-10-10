@@ -36,6 +36,15 @@ const NEEDED = {
   'tip': { wants: 'money amount', why: 'tips are the reason this gateway is interesting' },
   'channelPointsRedemption': { wants: 'none — flat is right', why: 'a redemption is one event' },
   'redemption': { wants: 'none — flat is right', why: 'same' },
+  // YouTube only, and only over this gateway: the native Live Streaming API has
+  // no follow notification at all, so this is the one event an Astro channel
+  // gets that a native YouTube one never can.
+  'subscriber': { wants: 'none — flat is right', why: 'a subscriber is one subscriber' },
+  // A YouTube channel membership. Flat is defensible; `amount` is there if
+  // tier-weighted pricing is ever wanted.
+  'sponsor': { wants: 'none — flat is right, or amount by tier', why: 'membership, not subscription' },
+  'merch': { wants: 'price', why: 'a purchase should be worth what was paid' },
+  'purchase': { wants: 'amount', why: 'same' },
 };
 
 // `channel.session.update` names its payload with Session Data Reference keys
