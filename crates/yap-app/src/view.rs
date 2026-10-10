@@ -1482,6 +1482,96 @@ mod tests {
     }
 
     #[gpui_kit::test]
+    fn a_credential_input_is_masked_and_watched_by_nothing(cx: &mut gpui_kit::TestAppContext) {
+        // The mechanism that keeps a token out of `settings.toml`.
+        //
+        // Save is the panel's only commit and Save writes a file, so the whole
+        // safety of the credential store rests on one structural fact: the
+        // masked credential inputs have no change subscription, so typing in one
+        // never reaches `SettingsModel::set`, never marks the panel dirty, and
+        // never becomes part of what Save writes.
+        //
+        // Asserted on the real panel rather than on `SettingsModel`, because a
+        // unit test of the model passes whether or not anything ever calls it —
+        // the same shape as the four dead controls this project has already had,
+        // where a model quietly held the right value and the user saw nothing.
+        use gpui_kit::test::TestWindowExt as _;
+
+        let (root, cx) = open_window!(cx);
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        cx.update(|window, cx| window.click("segment-Settings", cx));
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+
+        // Find the section holding a credential, so this does not depend on
+        // which section that happens to be today.
+        let (section, key) = crate::settings::SETTINGS_SECTIONS
+            .iter()
+            .enumerate()
+            .find_map(|(index, section)| {
+                section
+                    .fields
+                    .iter()
+                    .find(|field| field.kind == crate::settings::FieldKind::Secret)
+                    .map(|field| (index, field.key))
+            })
+            .expect("some field is a credential");
+
+        cx.update(|window, cx| {
+            window.click(SharedId::section(section), cx);
+            window.draw(cx).clear(cx);
+        });
+
+        let panel = cx.update(|_window, cx| {
+            root.read(cx)
+                .view
+                .read(cx)
+                .settings()
+                .expect("a settings panel")
+                .clone()
+        });
+
+        let input = cx
+            .update(|_window, cx| panel.read(cx).secret_input(key))
+            .unwrap_or_else(|| panic!("{key} has no masked input"));
+
+        // Masked, and empty — a credential is never pre-filled, because a masked
+        // box holding the real value defeats the masking.
+        assert!(
+            cx.update(|_window, cx| panel.read(cx).secret_input_is_masked(key)),
+            "a credential input must start masked",
+        );
+        assert_eq!(
+            cx.update(|_window, cx| input.read(cx).value()),
+            "",
+            "a credential input must start empty, not pre-filled with the stored value",
+        );
+
+        // The load-bearing assertion: nothing watches it.
+        let watched = cx.update(|_window, cx| panel.read(cx).subscribed_keys());
+
+        assert!(
+            !watched.iter().any(|k| k == key),
+            "{key} is watched for changes, so typing it arms Save — and Save writes \
+             settings.toml, which is safe to share and safe to screenshot. Watched: {watched:?}",
+        );
+
+        // And the editable model it would have gone into is empty for it.
+        assert_eq!(
+            cx.update(|_window, cx| panel.read(cx).model_value(key)),
+            "",
+            "a credential must not be in the model Save serialises",
+        );
+
+        // Sanity on the other half: ordinary fields *are* watched, or this test
+        // would pass for the wrong reason — a panel that subscribes to nothing at
+        // all.
+        assert!(
+            watched.iter().any(|k| k == "twitch_channel"),
+            "ordinary settings must be watched, or Save could never be armed: {watched:?}",
+        );
+    }
+
+    #[gpui_kit::test]
     fn a_counted_session_tells_the_window_to_repaint(cx: &mut gpui_kit::TestAppContext) {
         // The bug this test exists for.
         //

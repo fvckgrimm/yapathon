@@ -50,23 +50,18 @@ impl GroqEngine {
     pub const KEYRING_USER: &'static str = "api-key";
 
     pub fn from_keyring(service: &str) -> Result<Self, EngineError> {
-        let entry = keyring::Entry::new(service, Self::KEYRING_USER)
-            .map_err(|e| EngineError::Api(format!("credential store unavailable: {e}")))?;
-
-        let secret = entry
-            .get_password()
-            .map_err(|e| EngineError::Api(format!("no stored key for {service}: {e}")))?;
+        // Through `yap-core::secrets`, the same door the in-app credential
+        // prompt writes through.
+        let secret = yap_core::secrets::get(service, Self::KEYRING_USER)
+            .map_err(|e| EngineError::Api(format!("credential store unavailable: {e}")))?
+            .ok_or_else(|| EngineError::Api(format!("no stored key for {service}")))?;
 
         Ok(Self::new(secret))
     }
 
     /// Store a key for later use.
     pub fn store_keyring(service: &str, api_key: &str) -> Result<(), EngineError> {
-        let entry = keyring::Entry::new(service, Self::KEYRING_USER)
-            .map_err(|e| EngineError::Api(format!("credential store unavailable: {e}")))?;
-
-        entry
-            .set_password(api_key)
+        yap_core::secrets::set(service, Self::KEYRING_USER, api_key)
             .map_err(|e| EngineError::Api(format!("could not store the key: {e}")))
     }
 }

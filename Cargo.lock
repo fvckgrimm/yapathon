@@ -9281,6 +9281,7 @@ dependencies = [
  "anyhow",
  "async-trait",
  "directories",
+ "keyring",
  "log",
  "serde",
  "serde_json",

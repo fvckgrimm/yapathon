@@ -292,6 +292,21 @@ never rendered as a value and never written to `settings.toml` — that file is 
 one thing on a streaming machine that gets synced, backed up and pasted into
 support threads.
 
+**Setting one is a button.** Next to each credential the panel shows whether it
+is set, and a **Set…** button opens a masked input with a reveal toggle. The
+dialog's own **Save** button is what commits it, to GNOME Keyring, KWallet, the
+macOS Keychain or the Windows Credential Manager, under the field's name.
+
+There is deliberately **no file fallback**. On a machine with no credential store
+the panel says so and offers no button, rather than quietly writing the key to a
+dotfile. The moment that matters is a machine whose store is missing, which is
+exactly the machine nobody is thinking about later — so it fails loudly instead.
+
+The Save button at the bottom of the panel is **not** how a credential is
+committed, and typing one does not enable it. That is structural rather than a
+promise: the credential inputs have no change subscription, so they never reach
+the model that Save serialises.
+
 ### Where the settings file is
 
 Two places, checked in this order:
@@ -455,6 +470,9 @@ credential = "yap-a-thon/groq"
 The key goes in the OS credential store, never in `settings.toml` — that file gets
 synced, backed up and pasted into support threads. About $0.04/hour of audio.
 
+Put it in with **Settings → Engine → Groq API key → Set…**. The dialog's Save
+button writes it to the keyring under the field's own name.
+
 ### Twitch
 
 All three of these are needed; a partial config is treated as no config rather
@@ -463,13 +481,12 @@ silently receives nothing without a token.
 
 1. Register an application at [dev.twitch.tv/console/apps](https://dev.twitch.tv/console/apps).
 2. Get a user access token with the channel scopes.
-3. Store the token in the OS credential store under the `credential` name above.
+3. Store the token with **Settings → Twitch → Token → Set…**.
 4. Set the channel login and the application id.
 
 ```toml
 twitch_channel = "your_login"
 twitch_client_id = "your_app_id"
-twitch_credential = "yap-a-thon/twitch"
 ```
 
 Without any of this, chat commands still work and a yapathon is still playable —
@@ -543,12 +560,11 @@ an argument.
 Working: counting, all three goal modes and the hard limit, the audit log, undo
 and the three correction shapes, chat commands, per-event pricing, the live
 microphone picker, the model file chooser, click-to-copy overlay URL, the local
-API, the dock, the overlay, and the settings panel.
+API, the dock, the overlay, the settings panel, and the in-app credential prompt.
 
 Not yet: Twitch EventSub runs but has not been tested against a live channel;
 there is no model download or first-run wizard; session history is not persisted
-between runs; the settings panel's secret fields need a credential prompt, which
-is not built, so a token still has to be set outside the app.
+between runs; YouTube is planned but not built ([`docs/youtube.md`](docs/youtube.md)).
 
 Verified by test rather than by eye:
 
@@ -565,19 +581,24 @@ Verified by test rather than by eye:
   snapshots into its model without notifying, so the count advanced in memory
   through an entire yapathon while the number on screen stayed at zero.
 
-Not verified: word counting against real speech has not been measured end to end.
-Every rule in `yap-core` is tested against text, and the segmenter's boundaries
-are tested against synthetic audio, but the accuracy of the whole chain depends
-on the model and on the room.
+Not verified: word counting against real speech has been confirmed once — words
+appeared and words-per-minute followed when someone talked — but accuracy has not
+been measured properly. Every rule in `yap-core` is tested against text, and the
+segmenter's boundaries are tested against synthetic audio, so what is unmeasured
+is the chain's behaviour on a real room and a real model.
 
 **The overlay has still not been seen rendering inside OBS**, though it turned
 out to be OBS's own "disable hardware acceleration for browser sources" setting
 rather than anything in the page. The `backdrop-filter` removal stands on its own
 — it is a real CEF hazard either way.
 
-**The settings panel's secret fields still need a credential prompt**, so a Twitch
-token or Groq key has to be set outside the app. Everything else in the panel is
-editable and persists.
+**The credential dialog has not been clicked through.** Its store round trip, its
+masking, its empty-value refusal and the fact that typing into it does not arm
+Save are all tested, and the panel renders it. But opening the dialog itself is
+not covered headlessly — GPUI's test window has no component root, and building
+one needs an `&mut App` that the test context does not hand out. So "click Set,
+a dialog appears, paste a token, click Save, it says stored" is the one step
+that wants a human.
 
 Two bugs in this list were only findable by running it, and both had the same
 shape — no error anywhere, just a symptom that looked like something else:

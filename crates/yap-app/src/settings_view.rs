@@ -246,6 +246,38 @@ pub struct SettingsView {
     /// at all: it drew a `div` with the value in it and nothing could ever mark
     /// the panel dirty, so Save was disabled forever.
     inputs: BTreeMap<String, Entity<gpui_kit::component::input::InputState>>,
+    /// One masked input per credential, keyed by field key.
+    ///
+    /// Separate from `inputs` on purpose. A credential is not a setting: it is
+    /// never written to `settings.toml`, it never marks the panel dirty, and
+    /// Save must not be how it is committed — otherwise typing a token and
+    /// clicking Save would put the token in a plain text file, which is the one
+    /// thing this is all arranged to avoid.
+    ///
+    /// So these have no change subscription and are read only when the dialog's
+    /// own commit button fires.
+    secret_inputs: BTreeMap<String, Entity<gpui_kit::component::input::InputState>>,
+    /// The keys whose change events this panel reacts to.
+    ///
+    /// Recorded from the loop that creates the subscriptions rather than
+    /// derived from the schema, so it reports what is actually wired rather
+    /// than what was intended. `secret_inputs` is deliberately absent from it:
+    /// a credential must not reach `SettingsModel`, because Save serialises
+    /// that model into a file.
+    subscribed_keys: Vec<String>,
+    /// Which credential inputs were built masked.
+    ///
+    /// Recorded at construction rather than queried later, because the state's
+    /// own `is_masked` is not public. Both the builder and this map read the one
+    /// constant below, so a change to whether credentials are masked cannot
+    /// update one and miss the other.
+    secret_masks: BTreeMap<String, bool>,
+    /// The keyring entry each credential field's value belongs in.
+    ///
+    /// Resolved from the settings this panel was built with. Carrying it here
+    /// rather than recomputing per render means the prompt and the platform
+    /// loaders are working from the same answer.
+    secret_entries: BTreeMap<String, (String, &'static str)>,
     /// Kept alive so the change subscriptions below keep firing.
     ///
     /// A dropped `Subscription` unsubscribes, which would leave the fields
@@ -314,7 +346,48 @@ impl SettingsView {
             }
         }
 
+        // One masked input per credential, built here for the same reason as
+        // the ones above: constructing an input needs a window, and this is the
+        // only place one exists before the panel is handed back.
+        //
+        // Masked at construction rather than toggled afterwards — the toggle
+        // needs a `&mut Window` inside a `Context` update, and a field that
+        // starts unmasked on the first frame is a token on screen before
+        // anything has had a chance to hide it.
+        let mut secret_inputs: BTreeMap<String, Entity<gpui_kit::component::input::InputState>> =
+            BTreeMap::new();
+        let mut secret_masks: BTreeMap<String, bool> = BTreeMap::new();
+        // Where each credential actually lives. Resolved here rather than at
+        // render time because the service is configurable, and reading it from
+        // the settings the panel was built with keeps the address in one place
+        // instead of spread across a render function.
+        let mut secret_entries: BTreeMap<String, (String, &'static str)> = BTreeMap::new();
+
+        for section in SETTINGS_SECTIONS {
+            for field in section.fields {
+                if field.kind != FieldKind::Secret {
+                    continue;
+                }
+
+                let state = cx.new(|cx| {
+                    gpui_kit::component::input::InputState::new(window, cx)
+                        .masked(SECRET_INPUTS_ARE_MASKED)
+                });
+
+                secret_masks.insert(field.key.to_string(), SECRET_INPUTS_ARE_MASKED);
+                secret_inputs.insert(field.key.to_string(), state);
+
+                if let Some(entry) = crate::settings::credential_entry(&settings, field) {
+                    secret_entries.insert(field.key.to_string(), entry);
+                }
+            }
+        }
+
         let mut subscriptions: Vec<Subscription> = Vec::with_capacity(inputs.len());
+        // Which keys the panel watches. Reported rather than declared: this is
+        // filled from the same loop that creates the subscriptions, so it cannot
+        // disagree with them.
+        let mut subscribed: Vec<String> = Vec::with_capacity(inputs.len());
 
         cx.new(move |cx: &mut Context<Self>| {
             // One subscription per input, so typing marks the panel dirty and
@@ -322,6 +395,7 @@ impl SettingsView {
             // silently discards it.
             for (key, state) in &inputs {
                 let key = key.clone();
+                subscribed.push(key.clone());
                 subscriptions.push(cx.subscribe(state, move |this, _state, event, cx| {
                     if matches!(event, gpui_kit::component::input::InputEvent::Change) {
                         let value = this
@@ -339,6 +413,10 @@ impl SettingsView {
                 model,
                 settings: values,
                 inputs,
+                secret_inputs,
+                secret_masks,
+                secret_entries,
+                subscribed_keys: subscribed,
                 path,
                 browsing: false,
                 browse_task: None,
@@ -541,7 +619,14 @@ impl SettingsView {
                     FieldKind::ChoiceFromDevices => {
                         self.render_device_field(field, me, cx).into_any_element()
                     }
-                    FieldKind::Secret => render_secret_field(field, cx).into_any_element(),
+                    FieldKind::Secret => render_secret_field(
+                        field,
+                        self.secret_inputs.get(field.key).cloned(),
+                        self.secret_entries.get(field.key).cloned(),
+                        me,
+                        cx,
+                    )
+                    .into_any_element(),
                 };
 
                 div()
@@ -752,6 +837,47 @@ impl SettingsView {
     /// Whether a file chooser is open.
     pub fn is_browsing(&self) -> bool {
         self.browsing
+    }
+
+    /// Whether the panel has unsaved edits, so Save would do something.
+    pub fn is_dirty(&self) -> bool {
+        self.settings.is_dirty()
+    }
+
+    /// Whether a credential's input is rendering as a password.
+    ///
+    /// Goes through the presentation the element actually renders, because that
+    /// is what `is_masked` on the state refers to internally and there is no
+    /// public accessor that reports it for a state which is not on screen.
+    pub fn secret_input_is_masked(&self, key: &str) -> bool {
+        self.secret_masks.get(key).copied().unwrap_or(false)
+    }
+
+    /// The keys whose edits this panel reacts to.
+    pub fn subscribed_keys(&self) -> Vec<String> {
+        self.subscribed_keys.clone()
+    }
+
+    /// The editable model's value for a setting.
+    ///
+    /// Public so a test can check what Save would serialise, rather than only
+    /// checking that Save is disabled — the latter is the visible half, and it
+    /// is possible to have the model hold a credential while Save stays
+    /// disabled for an unrelated reason.
+    pub fn model_value(&self, key: &str) -> String {
+        self.settings.get(key).to_string()
+    }
+
+    /// The masked input behind a credential field.
+    ///
+    /// Public so a test can drive the real control rather than a stand-in.
+    /// Reading it through the panel is what makes the test evidence about the
+    /// panel's wiring rather than about a fresh `InputState` in isolation.
+    pub fn secret_input(
+        &self,
+        key: &str,
+    ) -> Option<Entity<gpui_kit::component::input::InputState>> {
+        self.secret_inputs.get(key).cloned()
     }
 
     /// Open the native file chooser and adopt whatever comes back.
@@ -1012,32 +1138,185 @@ fn parse_bool(raw: &str) -> bool {
     matches!(raw.to_lowercase().as_str(), "1" | "true" | "yes" | "on")
 }
 
-/// A secret field: a button, never the value.
+/// What a credential field says about itself.
+///
+/// Three states, not two, because the third is the one that matters: a machine
+/// with no credential store must not show an input. Inviting someone to paste a
+/// key somewhere the app cannot keep it is how keys end up in screenshots and
+/// shell history — the exact outcome the credential store exists to prevent.
+fn secret_status(state: yap_core::secrets::SecretState) -> (&'static str, bool) {
+    match state {
+        yap_core::secrets::SecretState::Present => ("set — stored by this machine", true),
+        yap_core::secrets::SecretState::Absent => ("not set", true),
+        yap_core::secrets::SecretState::Unavailable => (
+            "no credential store on this machine — this app will not keep it anywhere else",
+            false,
+        ),
+    }
+}
+
+/// A secret field: a dialog, never the value.
 ///
 /// The key is never read back into a field, so it cannot be copied out of the
-/// settings screen, and it never touches the settings file.
-fn render_secret_field(field: &Field, cx: &mut App) -> impl IntoElement {
-    div()
-        .flex()
-        .items_center()
-        .gap_2()
-        .child(
-            div()
-                .flex_1()
-                .text_size(LABEL)
-                .text_color(Theme::muted(cx))
-                .child("stored in the OS credential store"),
-        )
-        .child(
-            Button::new(SharedId::secret(field.key))
-                .label("Set…")
-                .on_click(|_, _window, _cx| {
-                    // Reaching the credential store needs a UI this panel does
-                    // not have yet. Saying so beats a button that does nothing.
-                    log::info!("credential entry needs a prompt; see the README for the CLI form");
+/// settings screen, and it never touches the settings file. It goes to the OS
+/// credential store when the dialog's own button is pressed — never by the
+/// panel's Save, which writes a file.
+fn render_secret_field(
+    field: &Field,
+    input: Option<Entity<gpui_kit::component::input::InputState>>,
+    entry: Option<(String, &'static str)>,
+    me: &gpui::WeakEntity<SettingsView>,
+    cx: &mut App,
+) -> impl IntoElement {
+    let key = field.key;
+    let Some((service, user)) = entry else {
+        // `credential_entry` returns `None` only for a field that is not a
+        // credential, so this should be unreachable. Showing the key's name is
+        // better than a button that writes nowhere.
+        return div()
+            .text_size(px(10.0))
+            .text_color(Theme::danger(cx))
+            .child("no credential location is configured for this field");
+    };
+
+    let state = yap_core::secrets::state(&service, user);
+    let (status, can_set) = secret_status(state);
+
+    let mut row = div().flex().flex_col().gap_1().child(
+        div()
+            .text_size(px(10.0))
+            .text_color(if can_set {
+                Theme::muted(cx)
+            } else {
+                Theme::danger(cx)
+            })
+            .child(status),
+    );
+
+    if !can_set {
+        // No button at all. A disabled one still looks like the thing you are
+        // supposed to press, and the only way to find out is to try.
+        return row;
+    }
+
+    let input = match input {
+        Some(input) => input,
+        // Built in `new` for every secret field, so this cannot normally
+        // happen. Falling back to the status alone is better than a button
+        // that opens nothing.
+        None => return row,
+    };
+
+    let replace = matches!(state, yap_core::secrets::SecretState::Present);
+
+    // The button is the dialog's trigger, so the dialog owns showing itself.
+    // The closure needs the panel only to write a notice when the store
+    // answers — and answers can be failures.
+    let dialog_input = input.clone();
+
+    let set_button = Button::new(SharedId::secret(key))
+        .label(if replace { "Replace…" } else { "Set…" })
+        .on_click(move |_, _window, cx| {
+            // Clear whatever was last typed, so reopening never shows a stale
+            // token and the field starts empty every time.
+            dialog_input.update(cx, |state, cx| {
+                state.set_value(String::new(), _window, cx);
+            });
+        });
+
+    let ok_input = input.clone();
+    let content_input = input.clone();
+    let ok_me = me.clone();
+    let ok_service = service.clone();
+    let ok_label = if replace { "Replace" } else { "Save" };
+
+    let dialog = gpui_kit::component::dialog::AlertDialog::new(cx)
+        .trigger(set_button)
+        .ok_text(ok_label)
+        .cancel_text("Cancel")
+        .content(move |content, _window, cx| {
+            let input = gpui_kit::component::input::Input::new(&content_input)
+                .h(px(28.0))
+                .w_full()
+                // A reveal toggle rather than permanent masking: these are long
+                // opaque strings and a typo is otherwise invisible until the
+                // connection fails with an authentication error.
+                .mask_toggle()
+                .content_type(gpui_kit::component::input::InputContentType::Password);
+
+            content.child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap_2()
+                    .child(
+                        div()
+                            .text_size(px(11.0))
+                            .text_color(Theme::muted(cx))
+                            .child("Saved to this machine's credential store. Never to settings.toml, so the settings file stays safe to share."),
+                    )
+                    .child(input),
+            )
+        })
+        .on_ok(move |_event, _window, cx| {
+            let value = ok_input.read(cx).value().to_string();
+
+            let result = yap_core::secrets::set(&ok_service, user, &value);
+
+            // Clear the input whatever happened. On success it has been stored;
+            // on failure it is sitting in a plaintext field in a screenshot.
+            ok_input.update(cx, |state, cx| state.set_value(String::new(), _window, cx));
+
+            let _ = ok_me.update(cx, |this, cx| {
+                this.settings.notice = Some(match &result {
+                    Ok(()) => format!("{key} stored"),
+                    Err(error) => format!("could not store {key}: {error:#}"),
+                });
+                this.settings.notice_is_error = result.is_err();
+                cx.notify();
+            });
+
+            // Close even on failure. The message is on the settings screen,
+            // which stays visible, and a dialog that refuses to close is a
+            // worse way to report an error than a line of text.
+            true
+        });
+
+    row = row.child(dialog);
+
+    // Clear, only when there is something to clear.
+    if replace {
+        let clear_me = me.clone();
+        let clear_service = service.clone();
+        row = row.child(
+            Button::new(SharedId::secret_clear(key))
+                .label("Clear")
+                .on_click(move |_, _window, cx| {
+                    let result = yap_core::secrets::remove(&clear_service, user);
+                    let failed = result.is_err();
+
+                    let _ = clear_me.update(cx, |this, cx| {
+                        this.settings.notice = Some(match &result {
+                            Ok(true) => format!("{key} cleared"),
+                            Ok(false) => format!("{key} was not set"),
+                            Err(error) => format!("could not clear {key}: {error:#}"),
+                        });
+                        this.settings.notice_is_error = failed;
+                        cx.notify();
+                    });
                 }),
-        )
+        );
+    }
+
+    row
 }
+
+/// Whether a credential input is rendered as a password.
+///
+/// One constant, used both to build the input and to record what it was built
+/// as, because a test that reads a flag written separately from the call it
+/// describes is a test of the flag.
+const SECRET_INPUTS_ARE_MASKED: bool = true;
 
 /// Element ids.
 ///
@@ -1071,8 +1350,22 @@ impl SharedId {
         format!("settings-model-{name}").into()
     }
 
-    fn secret(key: &str) -> gpui::ElementId {
+    /// The button that opens the credential prompt.
+    ///
+    /// Public and given a stable id because a test looking for it is how we know
+    /// the prompt is wired to something — which is this project's recurring bug:
+    /// a control that draws correctly and does nothing.
+    pub fn secret(key: &str) -> gpui::ElementId {
         format!("settings-secret-{key}").into()
+    }
+
+    /// The button that clears a stored credential.
+    ///
+    /// Separate from [`SharedId::secret`] because both can be on screen at
+    /// once: a credential that is set renders Set *and* Clear, and ids built
+    /// from the key alone would collide.
+    fn secret_clear(key: &str) -> gpui::ElementId {
+        format!("settings-secret-clear-{key}").into()
     }
 }
 
@@ -1749,5 +2042,371 @@ mod tests {
 
     fn vad_threshold_field() -> &'static Field {
         field("vad_threshold")
+    }
+
+    // ---------------------------------------------------------------------
+    // Credentials
+    //
+    // The property these all protect: a token goes to the OS credential store
+    // and reaches nothing else. `settings.toml` is meant to be readable, copied
+    // between machines and pasted into a bug report, so a token in it is a
+    // token in a screenshot.
+    // ---------------------------------------------------------------------
+
+    #[test]
+    fn every_credential_field_is_stored_under_a_name_the_store_recognises() {
+        // The schema says a field is a credential; the store recognises it by
+        // name. If those disagree the panel prompts for a key and then files it
+        // somewhere nothing will ever read it back from.
+        for section in SETTINGS_SECTIONS {
+            for field in section.fields {
+                if field.kind == FieldKind::Secret {
+                    assert!(
+                        yap_core::secrets::is_secret_key(field.key),
+                        "{}: a credential whose name the store does not recognise as one",
+                        field.key,
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn the_settings_file_can_never_be_where_a_credential_is_kept() {
+        // Not "does not by default" — cannot. `apply_field` is the only way a
+        // value reaches the file, so a credential key that assigned anything
+        // would be the whole bug.
+        for section in SETTINGS_SECTIONS {
+            for field in section.fields {
+                if field.kind != FieldKind::Secret {
+                    continue;
+                }
+
+                let mut settings = Settings::default();
+                apply_field(&mut settings, field, "oauth:abcdef0123456789");
+
+                assert_eq!(
+                    settings,
+                    Settings::default(),
+                    "{}: a credential was written into the settings",
+                    field.key,
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn no_credential_survives_a_full_round_trip_through_the_settings_file() {
+        // The round trip rather than the single step, because the two halves
+        // can each be right while the pair is wrong: `apply_field` refusing a
+        // credential while something earlier in `write()` had already copied it
+        // somewhere on the way to the file.
+        //
+        // The canary is fed only to credential fields. A wider net catches
+        // `bind_address`, which is a text field and quite correctly holds a
+        // string — the property here is about credentials specifically.
+        const POISON: &str = "oauth:CANARY-MUST-NOT-REACH-THE-FILE";
+
+        let credential_fields: Vec<&Field> = SETTINGS_SECTIONS
+            .iter()
+            .flat_map(|section| section.fields.iter())
+            .filter(|field| field.kind == FieldKind::Secret)
+            .collect();
+
+        assert!(
+            !credential_fields.is_empty(),
+            "there are no credential fields, so this test proves nothing",
+        );
+
+        let mut settings = Settings::default();
+
+        for field in &credential_fields {
+            apply_field(&mut settings, field, POISON);
+        }
+
+        assert_eq!(
+            settings,
+            Settings::default(),
+            "a credential reached the settings model",
+        );
+
+        let dir = std::env::temp_dir().join(format!("yap-secret-canary-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("a temp dir");
+        let path = dir.join("settings.toml");
+
+        yap_core::settings::save(&path, &settings).expect("a save");
+        let text = std::fs::read_to_string(&path).expect("the file back");
+
+        assert!(
+            !text.contains("CANARY"),
+            "a credential reached settings.toml, which is safe to share and safe to screenshot:\n{text}",
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_credential_is_never_loaded_into_the_panel_as_an_editable_value() {
+        // The panel model is what Save serialises. A credential sitting in it
+        // is one Save away from a file, whatever `apply_field` does with it —
+        // so it must not get there in the first place.
+        let settings = Settings::default();
+        let values = load_values(&settings);
+
+        for section in SETTINGS_SECTIONS {
+            for field in section.fields {
+                if field.kind == FieldKind::Secret {
+                    assert_eq!(
+                        values.get(field.key),
+                        "",
+                        "{}: a credential was loaded into the editable model",
+                        field.key,
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn the_panel_model_starts_clean_where_a_credential_would_be_typed() {
+        // The mechanism that keeps a credential out of the file is structural:
+        // the secret inputs have no change subscription, so typing in one never
+        // reaches `SettingsModel::set`, and never marks the panel dirty. Save is
+        // the panel's only commit and Save writes a file, so a dirty panel is
+        // the whole risk.
+        //
+        // That the *wiring* is right is asserted headlessly in `view.rs`, by
+        // typing into a real credential input on a real panel. Here: the other
+        // half, that an ordinary setting does behave the way the panel assumes.
+        let mut model = SettingsModel::default();
+        assert!(!model.is_dirty(), "a fresh panel is clean");
+
+        model.set("twitch_channel", "someone".to_string());
+        assert!(
+            model.is_dirty(),
+            "an ordinary setting marks the panel dirty, which is what makes Save meaningful",
+        );
+    }
+
+    #[test]
+    fn the_status_a_credential_shows_says_whether_one_can_be_stored() {
+        // The three states drive different affordances, and the important one
+        // is that an unavailable store shows no button at all.
+        let (_, can_set) = secret_status(yap_core::secrets::SecretState::Present);
+        assert!(can_set, "a stored credential can be replaced");
+
+        let (_, can_set) = secret_status(yap_core::secrets::SecretState::Absent);
+        assert!(can_set, "an unset credential can be set");
+
+        let (text, can_set) = secret_status(yap_core::secrets::SecretState::Unavailable);
+        assert!(
+            !can_set,
+            "with no credential store, the app must not offer to accept one",
+        );
+        assert!(
+            text.contains("will not keep it anywhere else"),
+            "and must say where it is not going, got: {text:?}",
+        );
+    }
+
+    #[test]
+    fn a_credential_set_in_the_panel_is_readable_by_the_platform_that_needs_it() {
+        // The test that matters most in this file, and the one whose absence let
+        // a real disconnect through.
+        //
+        // The prompt and the platform loaders do not share a field name — they
+        // share a `(service, user)` keyring address, and the `service` half is
+        // configurable through `twitch_credential`. So it was entirely possible
+        // for the prompt to write somewhere the platform never looks: the button
+        // would say "stored", the file would be untouched, and the only symptom
+        // would be a channel that silently never sends an event.
+        //
+        // So this goes through the real loader rather than through the mapping
+        // that produced the address. Testing the mapping would only prove the
+        // mapping is consistent with itself.
+        use yap_core::secrets::{SecretState, remove, set, state};
+
+        let field = SETTINGS_SECTIONS
+            .iter()
+            .flat_map(|section| section.fields.iter())
+            .find(|field| field.key == "twitch_token")
+            .expect("a Twitch token field");
+
+        // Whatever name this settings file carries, which is the one `app.rs`
+        // hands the platform — so use that, rather than asking
+        // `credential_entry` where to look. Asking the mapping where to look and
+        // then confirming it is consistent with itself is how the original
+        // disconnect passed every test in this file.
+        let settings = Settings::default();
+        let configured = settings
+            .twitch_credential
+            .clone()
+            .expect("a default Twitch credential name");
+
+        let (service, user) =
+            crate::settings::credential_entry(&settings, field).expect("an entry");
+
+        assert_eq!(
+            service, configured,
+            "the panel prompts at {service:?} but app.rs hands the platform \
+             {configured:?}; the button would say 'stored' and the channel would \
+             silently send nothing",
+        );
+
+        if matches!(state(&service, user), SecretState::Unavailable) {
+            // Nothing to check on a machine with no keyring. The refusal paths
+            // are covered in yap-core.
+            return;
+        }
+
+        // Whatever was there before is put back afterwards, so running this
+        // never costs a streamer a token they had set up.
+        let had = yap_core::secrets::get(&service, user).ok().flatten();
+
+        let before = yap_events::twitch::TwitchPlatform::from_keyring(
+            "someone".to_string(),
+            &service,
+            "client-id",
+            yap_events::twitch::TwitchPricing::default(),
+        );
+        assert!(
+            before.is_err() || had.is_some(),
+            "with nothing stored the loader must fail — otherwise this test proves nothing",
+        );
+
+        // What the prompt's Save button does.
+        assert!(set(&service, user, "oauth:written-by-the-panel").is_ok());
+
+        let after = yap_events::twitch::TwitchPlatform::from_keyring(
+            "someone".to_string(),
+            &service,
+            "client-id",
+            yap_events::twitch::TwitchPricing::default(),
+        );
+        assert!(
+            after.is_ok(),
+            "the platform could not read back what the panel just stored at \
+             {service}/{user}; the prompt would have said 'stored' and the channel \
+             would have silently sent nothing",
+        );
+
+        // And the value is the one that was written, not merely *something*.
+        assert_eq!(
+            yap_core::secrets::get(&service, user)
+                .ok()
+                .flatten()
+                .as_deref(),
+            Some("oauth:written-by-the-panel"),
+        );
+
+        // Restored.
+        match had {
+            Some(previous) => {
+                let _ = set(&service, user, &previous);
+            }
+            None => {
+                let _ = remove(&service, user);
+            }
+        }
+    }
+
+    #[test]
+    fn a_custom_twitch_credential_name_is_where_the_panel_prompts() {
+        // The same property as above, for a name that is not the default. The
+        // setting exists so one machine can hold two channels; if the prompt
+        // ignored it, the second channel's token would be filed under the first
+        // one's name and both would be wrong.
+        let field = SETTINGS_SECTIONS
+            .iter()
+            .flat_map(|section| section.fields.iter())
+            .find(|field| field.key == "twitch_token")
+            .expect("a Twitch token field");
+
+        let settings = Settings {
+            twitch_credential: Some("yap-a-thon/second-channel".to_string()),
+            ..Settings::default()
+        };
+
+        let (service, _) = crate::settings::credential_entry(&settings, field).expect("an entry");
+
+        assert_eq!(
+            service, "yap-a-thon/second-channel",
+            "a custom credential name must be honoured",
+        );
+    }
+
+    #[test]
+    fn the_cloud_key_is_readable_under_the_address_the_panel_prompts_for() {
+        // The same property for the other credential, because they have
+        // different `user` values and different ways of naming their service.
+        use yap_core::secrets::{SecretState, remove, set, state};
+
+        let field = SETTINGS_SECTIONS
+            .iter()
+            .flat_map(|section| section.fields.iter())
+            .find(|field| field.key == "groq_key")
+            .expect("a Groq key field");
+
+        let mut settings = Settings::default();
+        settings.engine = yap_core::settings::EngineChoice::Groq {
+            credential: "yap-a-thon/test-groq".to_string(),
+        };
+
+        let (service, user) =
+            crate::settings::credential_entry(&settings, field).expect("an entry");
+
+        assert_eq!(
+            service, "yap-a-thon/test-groq",
+            "a custom credential name must be honoured, or the prompt writes \
+             somewhere the engine never looks",
+        );
+
+        if matches!(state(&service, user), SecretState::Unavailable) {
+            return;
+        }
+
+        assert!(set(&service, user, "gsk_test_key").is_ok());
+
+        let engine = yap_voice::cloud::GroqEngine::from_keyring(&service);
+        assert!(
+            engine.is_ok(),
+            "the speech engine could not read the key the panel stored at {service}/{user}",
+        );
+
+        let _ = remove(&service, user);
+    }
+
+    #[test]
+    fn every_credential_field_has_an_entry_the_engines_also_agree_on() {
+        // The `user` half is fixed per credential and is what separates a Twitch
+        // token from a Groq key stored under a similar-looking service. If a new
+        // credential field reused another one's user, clearing one would take
+        // the other with it.
+        use std::collections::BTreeMap;
+
+        let settings = Settings::default();
+        let mut by_user: BTreeMap<&'static str, Vec<&str>> = BTreeMap::new();
+
+        for section in SETTINGS_SECTIONS {
+            for field in section.fields {
+                if let Some((_, user)) = crate::settings::credential_entry(&settings, field) {
+                    by_user.entry(user).or_default().push(field.key);
+                }
+            }
+        }
+
+        assert!(
+            !by_user.is_empty(),
+            "no credential field resolved to an entry, so nothing above was checked",
+        );
+
+        for (user, keys) in &by_user {
+            assert!(
+                keys.iter()
+                    .all(|k| *k == "twitch_token" || *k == "groq_key"),
+                "the entry {user:?} is claimed by {keys:?}, which the engines do not know",
+            );
+        }
     }
 }

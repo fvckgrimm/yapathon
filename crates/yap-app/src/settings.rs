@@ -356,6 +356,62 @@ pub const SETTINGS_SECTIONS: &[Section] = &[
     },
 ];
 
+/// The keyring entry a credential field's value belongs in.
+///
+/// `(service, user)` — the two halves the store files an entry under, either of
+/// which is enough to address nothing. `user` is fixed by what the credential
+/// *is*; `service` comes from settings, which is what lets one machine hold two
+/// Twitch channels.
+///
+/// Returns `None` for a field that is not a credential, so a caller cannot
+/// accidentally prompt for a setting and store it under `user-token`.
+///
+/// # Why this exists
+///
+/// The credential prompt and the platform loaders originally used different
+/// addresses — the prompt wrote under a service derived from the field name, the
+/// loaders read under `twitch_credential`. The prompt reported success and the
+/// platform found nothing, which is exactly the shape of every other bug this
+/// project has had: everything said it worked.
+///
+/// One function, so a field cannot be promptable at one address and read at
+/// another. The test for that is in `settings_view`, and it goes through the
+/// real loader rather than through this mapping.
+pub fn credential_entry(
+    settings: &yap_core::settings::Settings,
+    field: &Field,
+) -> Option<(String, &'static str)> {
+    if field.kind != FieldKind::Secret {
+        return None;
+    }
+
+    let service = match field.key {
+        "twitch_token" => settings
+            .twitch_credential
+            .clone()
+            .unwrap_or_else(|| yap_core::settings::credential_name("twitch")),
+        "groq_key" => match &settings.engine {
+            yap_core::settings::EngineChoice::Groq { credential } => credential.clone(),
+            // The engine is local, but the key is still worth keeping — a
+            // streamer may switch engines and would otherwise have to find it
+            // again. The default address is the one the cloud engine uses.
+            _ => yap_core::settings::credential_name("groq"),
+        },
+        // An unrecognised credential field gets the conventional address rather
+        // than no prompt at all. A secret the app cannot place is worse than
+        // one placed somewhere a future loader can be told to look.
+        _ => yap_core::settings::credential_name(field.key),
+    };
+
+    Some((
+        service,
+        match field.key {
+            "groq_key" => "api-key",
+            _ => "user-token",
+        },
+    ))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

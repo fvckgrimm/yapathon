@@ -11,6 +11,7 @@
 pub mod counting;
 pub mod engine;
 pub mod goal;
+pub mod secrets;
 pub mod session;
 pub mod settings;
 

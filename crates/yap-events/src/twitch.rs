@@ -297,10 +297,11 @@ impl TwitchPlatform {
         client_id: &str,
         pricing: TwitchPricing,
     ) -> Result<Self> {
-        let entry =
-            keyring::Entry::new(service, KEYRING_USER).context("credential store unavailable")?;
-        let token = entry
-            .get_password()
+        // Through `yap-core::secrets`, not a direct keyring call: the in-app
+        // credential prompt writes through the same door, and the two must not
+        // be able to drift apart in how they address an entry.
+        let token = yap_core::secrets::get(service, KEYRING_USER)
+            .context("credential store unavailable")?
             .with_context(|| format!("no stored Twitch token for {service}"))?;
 
         Ok(Self::new(channel, token, client_id.to_string(), pricing))
@@ -308,10 +309,7 @@ impl TwitchPlatform {
 
     /// Store a user token for later use.
     pub fn store_token(service: &str, token: &str) -> Result<()> {
-        let entry = keyring::Entry::new(service, KEYRING_USER).context("credential store")?;
-        entry
-            .set_password(token)
-            .context("storing the Twitch token")
+        yap_core::secrets::set(service, KEYRING_USER, token).context("storing the Twitch token")
     }
 
     /// The event kinds this connection subscribes to.
