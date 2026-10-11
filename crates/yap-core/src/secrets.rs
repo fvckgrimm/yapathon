@@ -68,6 +68,18 @@ pub enum SecretState {
     /// second would be inviting someone to paste a key somewhere it cannot
     /// safely go.
     Unavailable,
+    /// The store did not answer in time.
+    ///
+    /// Its own state because it is a different problem with a different fix,
+    /// and the two are indistinguishable if merged: gnome-keyring locks itself
+    /// when the machine is idle, and then *waits* for an unlock prompt no
+    /// desktop app can answer. Reading a credential in that state does not
+    /// fail — it hangs, and the window never appears.
+    ///
+    /// Saying "this machine has no credential store" about it would be
+    /// technically true and completely useless, because the store is right
+    /// there and one command fixes it.
+    Locked,
 }
 
 /// Whether a credential exists, without ever reading it.
@@ -77,7 +89,7 @@ pub enum SecretState {
 /// rendering even a length is more than the question needs answered.
 pub fn state(service: &str, user: &str) -> SecretState {
     let (service, user) = (service.to_string(), user.to_string());
-    bounded(move || match entry(&service, &user) {
+    match bounded(move || match entry(&service, &user) {
         // Building the entry fails when the platform has no store at all,
         // which is `Unavailable` for the same reason a failing read is.
         Err(_) => SecretState::Unavailable,
@@ -88,8 +100,10 @@ pub fn state(service: &str, user: &str) -> SecretState {
             // is not answering, which is not the same as holding nothing.
             Err(_) => SecretState::Unavailable,
         },
-    })
-    .unwrap_or(SecretState::Unavailable)
+    }) {
+        Bounded::Answered(state) => state,
+        Bounded::TimedOut => SecretState::Locked,
+    }
 }
 
 /// Read a credential.
@@ -110,10 +124,11 @@ pub fn get(service: &str, user: &str) -> anyhow::Result<Option<String>> {
             Err(error) => Err(format!("could not read {service}/{user}: {error}")),
         },
     }) {
-        Some(Ok(value)) => Ok(value),
-        Some(Err(error)) => Err(anyhow::anyhow!(error)),
-        None => Err(anyhow::anyhow!(
-            "credential store did not answer for {where_}"
+        Bounded::Answered(Ok(value)) => Ok(value),
+        Bounded::Answered(Err(error)) => Err(anyhow::anyhow!(error)),
+        Bounded::TimedOut => Err(anyhow::anyhow!(
+            "the credential store is locked, so {where_} could not be read. \
+             See the README for how to unlock it on this platform."
         )),
     }
 }
@@ -143,11 +158,11 @@ pub fn set(service: &str, user: &str, value: &str) -> anyhow::Result<()> {
             .set_password(&trimmed)
             .map_err(|error| format!("could not save {service}/{user}: {error}")),
     }) {
-        Some(Ok(())) => {}
-        Some(Err(error)) => return Err(anyhow::anyhow!(error)),
-        None => {
+        Bounded::Answered(Ok(())) => {}
+        Bounded::Answered(Err(error)) => return Err(anyhow::anyhow!(error)),
+        Bounded::TimedOut => {
             return Err(anyhow::anyhow!(
-                "credential store did not answer — {where_} may or may not have been saved"
+                "the credential store is locked, so {where_} may or may not have been saved"
             ));
         }
     }
@@ -186,11 +201,22 @@ pub fn remove(service: &str, user: &str) -> anyhow::Result<bool> {
 /// connection. Short enough that a locked one cannot stop the app launching.
 const TIMEOUT_SECONDS: u64 = 5;
 
+/// What came back from a keyring operation behind a deadline.
+enum Bounded<T> {
+    /// The store answered.
+    Answered(T),
+    /// It did not, within [`TIMEOUT_SECONDS`].
+    TimedOut,
+}
+
 /// Run a keyring operation with a deadline.
 ///
-/// Returns `None` when the deadline passed, which means the store did not
-/// answer — not that it said no.
-fn bounded<T: Send + 'static>(operation: impl FnOnce() -> T + Send + 'static) -> Option<T> {
+/// The timeout is reported separately from an error, because the two mean
+/// different things: a store that *replies* "no" has no store, while a store
+/// that does not reply is locked and wants unlocking. Merging them is how
+/// "this machine has no credential store" ends up being the message for a
+/// machine that has one.
+fn bounded<T: Send + 'static>(operation: impl FnOnce() -> T + Send + 'static) -> Bounded<T> {
     use std::sync::mpsc;
     use std::time::Duration;
 
@@ -200,13 +226,13 @@ fn bounded<T: Send + 'static>(operation: impl FnOnce() -> T + Send + 'static) ->
     });
 
     match rx.recv_timeout(Duration::from_secs(TIMEOUT_SECONDS)) {
-        Ok(value) => Some(value),
+        Ok(value) => Bounded::Answered(value),
         Err(_) => {
             log::warn!(
                 "credential store did not answer within {TIMEOUT_SECONDS}s — it is \
-                 probably locked. Treating as unavailable."
+                 probably locked. Treating as locked rather than missing."
             );
-            None
+            Bounded::TimedOut
         }
     }
 }
@@ -214,6 +240,41 @@ fn bounded<T: Send + 'static>(operation: impl FnOnce() -> T + Send + 'static) ->
 /// The keyring entry for a `(service, user)` pair.
 fn entry(service: &str, user: &str) -> anyhow::Result<Entry> {
     Entry::new(service, user).map_err(|error| anyhow::anyhow!("{service}/{user}: {error}"))
+}
+
+/// How to unlock the credential store on this machine.
+///
+/// # Why this exists, and why it is per-platform
+///
+/// A locked keyring looks exactly like a missing one from the inside, and the
+/// fix is a different command on every desktop. Saying "no credential store on
+/// this machine" about a locked one is technically true and completely useless,
+/// because the store is right there.
+///
+/// Only the Secret Service implementations really lock. **KWallet** normally
+/// unlocks with the session, and the **macOS Keychain** prompts on first use
+/// rather than blocking forever, so this is overwhelmingly a GNOME/Linux
+/// problem — but the code is platform-agnostic and the message should be too,
+/// rather than naming one desktop's tool on a machine that has six.
+///
+/// Returns an empty string where there is nothing useful to say, so a caller can
+/// show the generic advice instead of a blank line.
+pub fn unlock_hint() -> &'static str {
+    if cfg!(target_os = "linux") {
+        // Both spellings cover the same thing: `gnome-keyring-daemon --unlock`
+        // prompts for the login password on GNOME, and KDE's wallet is usually
+        // unlocked by the session manager already.
+        "unlock your keyring — on GNOME, `gnome-keyring-daemon --unlock`, or log out and back in"
+    } else if cfg!(target_os = "macos") {
+        // The macOS Keychain does not lock the way a Secret Service one does,
+        // so reaching this state usually means a non-interactive session rather
+        // than a locked keychain.
+        "the login keychain normally unlocks itself; Keychain Access if it does not"
+    } else if cfg!(target_os = "windows") {
+        "Windows Credential Manager does not lock, so this usually means no store is reachable"
+    } else {
+        ""
+    }
 }
 
 /// Whether a settings key names a credential rather than a preference.
@@ -300,7 +361,7 @@ mod tests {
         // machine with no keyring daemon asks the user to type in a key it is
         // about to discard. The name is one this app never uses.
         match state(SERVICE, NEVER_SET) {
-            SecretState::Absent | SecretState::Unavailable => {}
+            SecretState::Absent | SecretState::Unavailable | SecretState::Locked => {}
             SecretState::Present => panic!("a credential that was never set is present"),
         }
     }

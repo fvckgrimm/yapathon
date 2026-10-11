@@ -89,6 +89,12 @@ The tokens are per account — each only ever sees its own platform, and copying
 the wrong one connects to the other account's room. If it is not working, the
 app log says which platform each connection is actually receiving.
 
+Tokens go in the **OS credential store** — GNOME Keyring, KWallet, the macOS
+Keychain, Windows Credential Manager — never into `settings.toml`, which is the
+file that gets synced and pasted into support threads. If that store is locked
+the app says so and explains how to unlock it on your platform, rather than
+hanging; see [Running](docs/running.md#if-the-credential-store-is-locked).
+
 Then price your events in **Settings → Events**. Nothing is priced until you
 price it, and the app tells you when an event arrives that you have not priced.
 

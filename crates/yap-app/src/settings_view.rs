@@ -1187,10 +1187,29 @@ fn secret_status(state: yap_core::secrets::SecretState) -> (&'static str, bool) 
     match state {
         yap_core::secrets::SecretState::Present => ("set — stored by this machine", true),
         yap_core::secrets::SecretState::Absent => ("not set", true),
+
+        // Locked is its own message because its own command fixes it. Telling
+        // someone their machine has no credential store when it is sat right
+        // there, locked, is the kind of technically-true thing that sends them
+        // off to reinstall an OS.
+        yap_core::secrets::SecretState::Locked => ("locked — unlock it, then check again", false),
+
         yap_core::secrets::SecretState::Unavailable => (
             "no credential store on this machine — this app will not keep it anywhere else",
             false,
         ),
+    }
+}
+
+/// The extra line under a credential row, when there is something useful to add.
+///
+/// Platform-specific advice, kept out of [`secret_status`] so that function stays
+/// a pure mapping of state to words — and so that the advice is compiled per
+/// platform rather than chosen at runtime on a machine that has six.
+fn secret_hint(state: yap_core::secrets::SecretState) -> &'static str {
+    match state {
+        yap_core::secrets::SecretState::Locked => yap_core::secrets::unlock_hint(),
+        _ => "",
     }
 }
 
@@ -1232,6 +1251,21 @@ fn render_secret_field(
             })
             .child(status),
     );
+
+    // The way out, when there is one. Only for a *locked* store: a machine with
+    // no store has nothing to unlock, and saying "unlock it" there would send
+    // someone off to reinstall an OS.
+    if state == yap_core::secrets::SecretState::Locked {
+        let hint = secret_hint(state);
+        if !hint.is_empty() {
+            row = row.child(
+                div()
+                    .text_size(px(10.0))
+                    .text_color(Theme::muted(cx))
+                    .child(hint),
+            );
+        }
+    }
 
     if !can_set {
         // No button at all. A disabled one still looks like the thing you are
@@ -2324,6 +2358,50 @@ mod tests {
             text.contains("will not keep it anywhere else"),
             "and must say where it is not going, got: {text:?}",
         );
+    }
+
+    #[test]
+    fn a_locked_store_is_its_own_message_and_carries_its_own_fix() {
+        // The distinction that was merged away: a locked keyring and a missing
+        // one look identical from inside the app, and the fix for one is a
+        // command and the fix for the other is nothing.
+        //
+        // Telling someone their machine has no credential store when it is sat
+        // there, locked, is technically true and completely useless — it sends
+        // them to reinstall an OS.
+        let (text, can_set) = secret_status(yap_core::secrets::SecretState::Locked);
+
+        assert!(
+            !can_set,
+            "nothing can be accepted while the store is locked"
+        );
+        assert!(
+            text.contains("locked") && text.contains("unlock"),
+            "the message has to name the problem and the action, got: {text:?}",
+        );
+
+        // And it must not be the missing-store message wearing a hat.
+        let (missing, _) = secret_status(yap_core::secrets::SecretState::Unavailable);
+        assert_ne!(
+            text, missing,
+            "locked and missing are different problems with different fixes",
+        );
+
+        // The hint names the platform's own tool rather than one desktop's
+        // command on a machine that may have six.
+        let hint = secret_hint(yap_core::secrets::SecretState::Locked);
+        assert!(
+            cfg!(target_os = "macos") || cfg!(target_os = "windows") || !hint.is_empty(),
+            "on linux the locked store needs an actual command, got an empty hint",
+        );
+
+        // No hint where there is nothing to unlock.
+        assert_eq!(
+            secret_hint(yap_core::secrets::SecretState::Unavailable),
+            "",
+            "a missing store has nothing to unlock, so no advice",
+        );
+        assert_eq!(secret_hint(yap_core::secrets::SecretState::Present), "",);
     }
 
     /// Whether this machine's credential store can be **written to**.
