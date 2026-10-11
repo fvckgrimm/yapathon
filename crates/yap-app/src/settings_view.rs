@@ -334,6 +334,52 @@ pub struct SettingsView {
     browse_task: Option<Task<()>>,
 }
 
+/// Put the parts of a save that can take effect now, into effect now.
+///
+/// Whether this path is a model file the recogniser could actually open.
+///
+/// `is_file` and not `exists`, because one of the directories this app looks in
+/// is one it creates itself: pointing at `~/.local/share/yap-a-thon/models` is a
+/// directory that exists, opens no model, and fails at load with an error that
+/// does not say what was wrong with the path.
+fn model_path_is_usable(path: &std::path::Path) -> bool {
+    path.is_file()
+}
+
+/// A free function because it reads nothing but its argument, and a free
+/// function is testable without building a panel — which is the point, since the
+/// thing being tested is a judgement about a path, not a rendering.
+pub fn model_warning(saved: &yap_core::settings::Settings) -> Option<String> {
+    let yap_core::settings::EngineChoice::Local { model_path, .. } = &saved.engine else {
+        // A cloud engine has no local file to be wrong about. Its failures —
+        // a missing key, no network — happen when it runs, and are reported
+        // there with advice that is about the key rather than the path.
+        return None;
+    };
+
+    if model_path_is_usable(model_path) {
+        return None;
+    }
+
+    // Not an error when there is something on disk to use instead: the loader
+    // substitutes it, and the microphone thread says which one it picked.
+    let substitute = yap_core::settings::discover_models().into_iter().next();
+
+    Some(match substitute {
+        Some(model) => format!(
+            "saved — no model at {}, so {} will be used instead",
+            model_path.display(),
+            model.name()
+        ),
+        None => format!(
+            "saved — but there is no model at {}. Put a ggml model in {}, or \
+             choose one above.",
+            model_path.display(),
+            yap_core::settings::models_dir().display()
+        ),
+    })
+}
+
 impl SettingsView {
     pub fn new(
         model: Entity<SessionEntity>,
@@ -859,7 +905,10 @@ impl SettingsView {
                 div()
                     .text_size(px(10.0))
                     .text_color(Theme::muted(cx))
-                    .child("Engine and model changes take effect after a restart."),
+                    .child(
+                        "Engine, model and microphone changes take effect on Save. \
+                         Words spoken while the recogniser reloads are not counted.",
+                    ),
             )
     }
 }
@@ -992,7 +1041,29 @@ impl SettingsView {
             Ok(saved) => {
                 self.settings.mark_saved();
                 self.apply_live(&saved, cx);
-                self.settings.notice = Some("saved".to_string());
+
+                // Tell the microphone, so changing the model or the input device
+                // takes effect now rather than at the next launch.
+                //
+                // The state decides whether that is warranted by comparing the
+                // capture configuration before and after, so a save that only
+                // touched a colour does not tear the microphone down mid-count.
+                self.model.read(cx).state().notify_capture_changed();
+
+                // Asked once: a second call could disagree with the first, and
+                // the notice and its styling must not come from two different
+                // evaluations of the same question.
+                match model_warning(&saved) {
+                    Some(warning) => {
+                        self.settings.notice = Some(warning);
+                        self.settings.notice_is_error = true;
+                    }
+                    None => {
+                        self.settings.notice = Some("saved".to_string());
+                        self.settings.notice_is_error = false;
+                    }
+                }
+
                 cx.notify();
             }
             Err(error) => {
@@ -2358,6 +2429,80 @@ mod tests {
             "the Engine section offers only a text field — there is no way to pick \
              a model file without typing its absolute path",
         );
+    }
+
+    #[test]
+    fn saving_a_model_that_does_not_exist_says_so() {
+        // The half of this that used to be missing. A path that is not a file
+        // used to fail at the *next launch*, with nothing on screen at the moment
+        // it could still be fixed: the streamer saw "saved", went back to their
+        // stream, and the app came up a minute later unable to hear anything.
+        let mut settings = Settings::default();
+        settings.engine = yap_core::settings::EngineChoice::Local {
+            model_path: "/nope/missing.bin".into(),
+            backend: yap_core::settings::LocalBackend::default(),
+        };
+
+        let warning = model_warning(&settings).expect("a model that is not there must be reported");
+
+        assert!(
+            warning.contains("no model at") && warning.contains("/nope/missing.bin"),
+            "the warning must name the path that is wrong, or it cannot be acted \
+             on. Got: {warning:?}",
+        );
+    }
+
+    #[test]
+    fn a_warning_is_not_raised_for_a_model_that_is_there() {
+        // The other direction, and the one that matters most: a warning that
+        // appears when nothing is wrong teaches a streamer to ignore it, and
+        // then it says nothing useful the time it is true.
+        let mut settings = Settings::default();
+
+        // This file certainly exists.
+        settings.engine = yap_core::settings::EngineChoice::Local {
+            model_path: std::env::current_exe().unwrap_or_default(),
+            backend: yap_core::settings::LocalBackend::default(),
+        };
+
+        assert_eq!(
+            model_warning(&settings),
+            None,
+            "an existing model must not be reported as missing"
+        );
+
+        // And the reason it is `None` is that the path was checked, not that the
+        // check was skipped. A directory is not a model file, so this must warn —
+        // which is only true if `is_file` is doing the work.
+        //
+        // Asserted through the helper rather than through `model_warning`, whose
+        // second half depends on whether this machine happens to have a model to
+        // substitute. A test whose result depends on the machine it runs on is a
+        // test that passes for the wrong reason somewhere else.
+        assert!(
+            !model_path_is_usable(&std::env::temp_dir()),
+            "a directory exists but is not a model file, and must not pass for one",
+        );
+        assert!(
+            model_path_is_usable(&std::env::current_exe().expect("a test binary")),
+            "an existing file is usable",
+        );
+        assert!(!model_path_is_usable(std::path::Path::new(
+            "/nope/missing.bin"
+        )));
+    }
+
+    #[test]
+    fn a_cloud_engine_is_never_asked_about_model_files() {
+        // A cloud engine has no local file to be wrong about, and its failures
+        // are about the key or the network — which are reported when it runs,
+        // with advice that would be wrong here.
+        let mut settings = Settings::default();
+        settings.engine = yap_core::settings::EngineChoice::Groq {
+            credential: "yap-a-thon/groq".to_string(),
+        };
+
+        assert_eq!(model_warning(&settings), None);
     }
 
     #[test]

@@ -66,7 +66,28 @@ pub struct AppState {
 
     /// Which overlay shape to serve.
     overlay_style: RwLock<String>,
+
+    /// Told when the recognition settings change, so the microphone can reload.
+    ///
+    /// Here rather than on the app's hub because the settings panel does not have
+    /// a hub — it has the session entity, and that is what holds this. Every
+    /// other piece of shared state already goes through `AppState` for the same
+    /// reason.
+    ///
+    /// Optional so the many tests that build a bare `AppState` do not have to
+    /// care: `None` means nobody is listening, which is not an error.
+    capture_changes: std::sync::OnceLock<Option<tokio::sync::watch::Sender<CaptureNotice>>>,
 }
+
+/// "Something about the microphone changed."
+///
+/// A unit type rather than the configuration itself, deliberately: the
+/// microphone thread is what has to work out *what* changed and decide whether
+/// to rebuild, and it holds the configuration that is currently running. Sending
+/// the value here would put a second copy in play for no reader but the one that
+/// already has it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CaptureNotice;
 
 impl Default for AppState {
     fn default() -> Self {
@@ -87,6 +108,7 @@ impl AppState {
             warnings: RwLock::new(Vec::new()),
             overlay_theme: RwLock::new(yap_core::settings::default_overlay_theme()),
             overlay_style: RwLock::new(yap_core::settings::default_overlay_style()),
+            capture_changes: std::sync::OnceLock::new(),
         }
     }
 
@@ -172,6 +194,39 @@ impl AppState {
         if let Ok(mut guard) = self.overlay_theme.try_write() {
             *guard = theme.trim().to_lowercase();
         }
+    }
+
+    /// Announce that the recognition settings changed.
+    ///
+    /// A no-op until something calls [`AppState::watch_capture`], which is what
+    /// the microphone thread does at startup. Sending before that would fail for
+    /// want of a receiver, and there is nothing to tell.
+    pub fn notify_capture_changed(&self) {
+        if let Some(Some(sender)) = self.capture_changes.get() {
+            let _ = sender.send(CaptureNotice);
+        }
+    }
+
+    /// Watch for recognition settings changing.
+    ///
+    /// The returned receiver only sees *later* notifications, so a caller that
+    /// needs to know the starting point reads its own configuration for that.
+    /// Which is why this carries no value.
+    pub fn watch_capture(&self) -> Option<tokio::sync::watch::Receiver<CaptureNotice>> {
+        let sender = self
+            .capture_changes
+            .get_or_init(|| {
+                let (sender, receiver) = tokio::sync::watch::channel(CaptureNotice);
+                // The first receiver is dropped on purpose: it exists only to
+                // create the channel, and holding it would stop `send` from
+                // reporting "no receivers", which is not a condition worth
+                // branching on.
+                drop(receiver);
+                Some(sender)
+            })
+            .clone()?;
+
+        Some(sender.subscribe())
     }
 
     /// Set the shape served when the request does not ask for one.

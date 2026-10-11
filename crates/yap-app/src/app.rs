@@ -14,7 +14,7 @@ use yap_core::settings::Settings;
 use yap_events::astro::{AstroAccount, AstroPlatform};
 use yap_events::{ChatPlatform, EventSink, TwitchPlatform, TwitchPricing};
 use yap_server::AppState;
-use yap_voice::pipeline::{Listener, WordSink};
+use yap_voice::pipeline::WordSink;
 
 use crate::hub::Hub;
 use crate::model::{ModelMessage, SessionEntity, TranscriptLine};
@@ -85,107 +85,224 @@ pub fn open_main_window(
     Ok(())
 }
 
-/// Start the microphone and the recogniser.
+/// Start the microphone and the recogniser, and keep them in step with settings.
 ///
-/// Failures are reported through the hub rather than aborting startup. The
-/// window is already open by this point, and the count sitting at zero looks
-/// exactly like working — so a failure has to be visible somewhere, not only in
-/// a log nobody reads mid-stream.
+/// # Why this is a supervisor rather than a straight line
+///
+/// The engine used to be built once, at startup, and the listener parked on
+/// `pending()` for the life of the process. That made a model change need a
+/// restart, and the settings panel said so — which was honest, and also the
+/// reason the answer to "can I switch models without losing my place" was no.
+///
+/// So the microphone is now supervised: it watches for a capture configuration
+/// that differs from the one it loaded, stops, rebuilds, and starts again.
+///
+/// Words spoken during the swap are lost, and that is unavoidable — a model is
+/// hundreds of megabytes read into memory and the microphone cannot run through
+/// it. It is why this happens when the settings are *saved* rather than when a
+/// run starts: nobody is mid-count at that moment unless they are.
+///
+/// A run in progress is not a reason to refuse. The streamer has chosen to swap
+/// and would rather lose the last word than have the change silently ignored
+/// until the next launch, which is the alternative this replaces.
 fn start_listening(hub: &Hub) {
-    let settings = hub.settings().clone();
     let hub = hub.clone();
+    let state = hub.state();
+
+    // Watched before the first load, so a settings change made in the moment
+    // between this task starting and the microphone opening is not missed — the
+    // loop below compares against what it is running, so a notice that arrived
+    // early simply finds a difference and rebuilds.
+    let Some(mut reloads) = state.watch_capture() else {
+        log::warn!("yap-a-thon: no capture channel; the microphone will not reload");
+        return;
+    };
 
     runtime::spawn(async move {
-        let settings = &settings;
-        // Say which model is in use, and say so when it is not the one the
-        // settings asked for.
-        //
-        // The substitution is decided by the loader, which is the only place
-        // that knows both what was configured and what exists. Working it out
-        // here by comparing against the built-in default name instead warned on
-        // every install that was not running that exact file, which is every
-        // install — and a warning that is always true is one a streamer learns
-        // to ignore, including the time it is telling the truth.
-        match hub.model_substitution() {
-            Some(substitution) => {
-                hub.report(ModelMessage::Warning(format!(
-                    "using {} — no model at {}",
-                    substitution.using.display(),
-                    substitution.wanted.display(),
-                )));
-            }
-            None => log::info!("yap-a-thon: using the configured model"),
-        }
-
-        let engine = match yap_voice::build_engine(&settings.engine).await {
-            // `build_engine` returns a `Box<dyn TranscriptionEngine>`; this
-            // converts it to the `Arc` the listener shares, so a local engine
-            // and a cloud one are interchangeable to everything above this line.
-            Ok(engine) => Arc::from(engine) as Arc<dyn yap_core::engine::TranscriptionEngine>,
-            Err(error) => {
-                // The message names the directory to put a model in. "no model"
-                // with no path is what sends someone hunting their filesystem.
-                let message = match &settings.engine {
-                    yap_core::settings::EngineChoice::Local { .. } => format!(
-                        "{error}\nPut a ggml model in {} — the Settings tab lists any it finds \
-                         there.",
-                        yap_core::settings::models_dir().display()
-                    ),
-                    // A cloud engine's failure is about the key or the network,
-                    // and neither is helped by advice about model files.
-                    yap_core::settings::EngineChoice::Groq { .. } => error.to_string(),
-                };
-
-                hub.report_awaited(ModelMessage::Warning(message)).await;
-                return;
-            }
-        };
-
         let sink: Arc<dyn WordSink> = Arc::new(SessionSink { hub: hub.clone() });
 
-        // The device name is trimmed before use because it comes from a text
-        // field, and an empty or whitespace-only one means "the system default"
-        // rather than "a device called ' ' that does not exist".
-        let device = settings.input_device.trim().to_string();
-        if device.is_empty() {
-            log::info!("yap-a-thon: opening the default microphone");
-        } else {
-            log::info!("yap-a-thon: opening microphone {device:?}");
-        }
+        // The configuration this loop is currently running, seeded with what
+        // the hub loaded at startup. Compared against rather than tracked, so a
+        // change that happened before this task first ran is still noticed.
+        let mut running = crate::hub::CaptureConfig::of(hub.settings());
 
-        let started = if device.is_empty() {
-            Listener::start(engine, settings.vad, sink).await
-        } else {
-            Listener::start_named(device, engine, settings.vad, sink).await
-        };
-        log::info!("yap-a-thon: microphone opened");
+        loop {
+            // Reported per load, not once: a reload that silently used the old
+            // model would be indistinguishable from a reload that worked.
+            report_model_in_use(&hub, &running.engine);
 
-        let listener = match started {
-            Ok(listener) => listener,
-            Err(error) => {
-                hub.report_awaited(ModelMessage::Warning(format!(
-                    "microphone unavailable: {error:#}"
-                )))
-                .await;
+            let listener = match open_listener(&hub, &running, sink.clone()).await {
+                Some(listener) => listener,
+                None => {
+                    // The build failed. Park until the settings change, rather
+                    // than spinning: retrying a missing model every second
+                    // would fill the log and the warnings list with the same
+                    // line, and a warning that repeats forever is one nobody
+                    // reads.
+                    log::warn!("yap-a-thon: recogniser not available, waiting for a change");
+                    if wait_for_change(&hub, &mut reloads, &running).await {
+                        continue;
+                    }
+                    return;
+                }
+            };
+
+            hub.state().set_listening(true).await;
+            hub.report(ModelMessage::Listening(true));
+
+            if !wait_for_change(&hub, &mut reloads, &running).await {
                 return;
             }
-        };
 
-        hub.state().set_listening(true).await;
-        hub.report(ModelMessage::Listening(true));
+            // Drain before rebuilding, so the last second of speech is counted
+            // against the run that was happening rather than the next one.
+            listener.stop().await;
+            hub.state().set_listening(false).await;
+            hub.report(ModelMessage::Listening(false));
 
-        // Held for the life of the process.
-        //
-        // This used to read `listener.stop().await` — a comment said "held until
-        // shutdown" and the code did the opposite, tearing the microphone down
-        // the instant it opened. It looked like it worked because capture did
-        // start, and `listening` then reported false.
-        //
-        // Dropping the listener also closes the microphone, so it is parked here
-        // deliberately rather than left to fall out of scope.
-        let _held = listener;
-        std::future::pending::<()>().await;
+            let next = crate::hub::CaptureConfig::of(hub.settings());
+            if next == running {
+                // Woken by a write that did not change what is running. Nothing
+                // to rebuild, and stopping the microphone for it would cost a
+                // word for no reason.
+                log::debug!("yap-a-thon: capture settings rewritten but unchanged");
+                continue;
+            }
+
+            log::info!("yap-a-thon: reloading the recogniser");
+            running = next;
+        }
     });
+}
+
+/// Wait until the capture configuration differs from the running one.
+///
+/// `false` means the channel closed, which means the app is shutting down.
+///
+/// The hub is asked rather than the channel carrying the value, because the
+/// notice is a unit type on purpose — see [`yap_server::state::CaptureNotice`].
+/// Comparing the two is what makes a save that rewrites the settings file
+/// without changing the microphone a no-op instead of a needless rebuild.
+async fn wait_for_change(
+    hub: &Hub,
+    reloads: &mut tokio::sync::watch::Receiver<yap_server::state::CaptureNotice>,
+    running: &crate::hub::CaptureConfig,
+) -> bool {
+    // A closed channel means the app is shutting down. Continuing would spin on
+    // a configuration that will never change again.
+    wait_for_capture_change(reloads, hub.settings(), running).await
+}
+
+/// The wait itself, over plain settings so it can be tested without a hub.
+async fn wait_for_capture_change(
+    reloads: &mut tokio::sync::watch::Receiver<yap_server::state::CaptureNotice>,
+    settings: &yap_core::settings::Settings,
+    running: &crate::hub::CaptureConfig,
+) -> bool {
+    loop {
+        if crate::hub::CaptureConfig::of(settings) != *running {
+            return true;
+        }
+
+        if reloads.changed().await.is_err() {
+            return false;
+        }
+    }
+}
+
+/// Build the engine and open the microphone for one configuration.
+///
+/// `None` means the build failed and the caller should wait; the reason has
+/// already been reported, because it is the same reason a streamer needs to see
+/// whether it happened at startup or after a reload.
+async fn open_listener(
+    hub: &Hub,
+    config: &crate::hub::CaptureConfig,
+    sink: Arc<dyn WordSink>,
+) -> Option<yap_voice::pipeline::Listener> {
+    let engine = match yap_voice::build_engine(&config.engine).await {
+        // `build_engine` returns a `Box<dyn TranscriptionEngine>`; this converts
+        // it to the `Arc` the listener shares, so a local engine and a cloud one
+        // are interchangeable to everything above this line.
+        Ok(engine) => Arc::from(engine) as Arc<dyn yap_core::engine::TranscriptionEngine>,
+        Err(error) => {
+            // The message names the directory to put a model in. "no model"
+            // with no path is what sends someone hunting their filesystem.
+            let message = match &config.engine {
+                yap_core::settings::EngineChoice::Local { .. } => format!(
+                    "{error}\nPut a ggml model in {} — the Settings tab lists any it finds \
+                     there.",
+                    yap_core::settings::models_dir().display()
+                ),
+                // A cloud engine's failure is about the key or the network,
+                // and neither is helped by advice about model files.
+                yap_core::settings::EngineChoice::Groq { .. } => error.to_string(),
+            };
+
+            hub.report_awaited(ModelMessage::Warning(message)).await;
+            return None;
+        }
+    };
+
+    // The device name is already trimmed by `CaptureConfig`, and an empty one
+    // means "the system default" rather than a device that does not exist.
+    if config.input_device.is_empty() {
+        log::info!("yap-a-thon: opening the default microphone");
+    } else {
+        log::info!("yap-a-thon: opening microphone {:?}", config.input_device);
+    }
+
+    let started = if config.input_device.is_empty() {
+        yap_voice::pipeline::Listener::start(engine, config.vad, sink).await
+    } else {
+        yap_voice::pipeline::Listener::start_named(
+            config.input_device.clone(),
+            engine,
+            config.vad,
+            sink,
+        )
+        .await
+    };
+
+    match started {
+        Ok(listener) => {
+            log::info!("yap-a-thon: microphone open");
+            Some(listener)
+        }
+        Err(error) => {
+            hub.report_awaited(ModelMessage::Warning(format!(
+                "microphone unavailable: {error:#}"
+            )))
+            .await;
+            None
+        }
+    }
+}
+
+/// Say which model is in use, and say so when it is not the one that was asked for.
+///
+/// Split out because it now runs on every load rather than once at startup, and
+/// because the substitution is decided by the loader, which is the only place
+/// that knows both what was configured and what exists. Working it out here by
+/// comparing against the built-in default name instead warned on every install
+/// that was not running that exact file, which is every install — and a warning
+/// that is always true is one a streamer learns to ignore, including the time
+/// it is telling the truth.
+fn report_model_in_use(hub: &Hub, engine: &yap_core::settings::EngineChoice) {
+    if !matches!(engine, yap_core::settings::EngineChoice::Local { .. }) {
+        return;
+    }
+
+    match hub.model_substitution_for(engine) {
+        Some(substitution) => {
+            hub.report(ModelMessage::Warning(format!(
+                "using {} — no model at {}",
+                substitution.using.display(),
+                substitution.wanted.display(),
+            )));
+        }
+        None => log::info!("yap-a-thon: using the configured model"),
+    }
 }
 
 /// Start the Twitch connection, if one is configured.
@@ -1010,5 +1127,208 @@ mod tests {
     /// out, priced from the settings file.
     fn priced_event(platform: &AstroPlatform, frame: &str) -> yap_core::goal::Event {
         platform.event_from_json(frame).expect("a priced event")
+    }
+}
+
+#[cfg(test)]
+mod reload_tests {
+    use super::*;
+    use yap_core::settings::{EngineChoice, LocalBackend, Settings};
+    use yap_server::state::CaptureNotice;
+
+    fn local(path: &str) -> EngineChoice {
+        EngineChoice::Local {
+            model_path: std::path::PathBuf::from(path),
+            backend: LocalBackend::default(),
+        }
+    }
+
+    #[test]
+    fn a_model_change_is_a_capture_change() {
+        // The whole feature rests on this: a different model has to be something
+        // the supervisor notices. If it were not, saving would write the file and
+        // the microphone would keep using the old one — which is exactly the
+        // behaviour this replaced.
+        let before = crate::hub::CaptureConfig::of(&Settings::default());
+        let settings = Settings {
+            engine: local("/models/other.bin"),
+            ..Settings::default()
+        };
+        assert_ne!(
+            before,
+            crate::hub::CaptureConfig::of(&settings),
+            "swapping the model must be visible to the microphone thread",
+        );
+    }
+
+    #[test]
+    fn a_microphone_change_is_a_capture_change_too() {
+        // `input_device` and the VAD are threaded into `Listener::start` beside
+        // the engine, so leaving them out of the comparison would mean those
+        // settings silently did nothing — the same class of bug as the one this
+        // replaced, one level down.
+        let before = crate::hub::CaptureConfig::of(&Settings::default());
+        let settings = Settings {
+            input_device: "Blue Yeti".to_string(),
+            ..Settings::default()
+        };
+        assert_ne!(before, crate::hub::CaptureConfig::of(&settings));
+    }
+
+    #[test]
+    fn a_colour_change_is_not_a_capture_change() {
+        // The other direction, and the reason the comparison is on a named
+        // subset rather than "the settings changed". Tearing the microphone down
+        // to apply an overlay colour would cost a word of counting mid-stream.
+        let mut settings = Settings::default();
+        let before = crate::hub::CaptureConfig::of(&settings);
+
+        settings.overlay_theme = "neon".to_string();
+        settings.overlay_style = "big".to_string();
+        settings.accent = "pink".to_string();
+
+        assert_eq!(
+            before,
+            crate::hub::CaptureConfig::of(&settings),
+            "only capture settings may move the microphone",
+        );
+    }
+
+    #[test]
+    fn a_whitespace_device_is_the_default_device_not_a_new_one() {
+        // The device name comes from a text field. Trimming is what makes " "
+        // mean "system default" rather than "a microphone called ' '", and the
+        // trim has to happen before the comparison or every save of an untouched
+        // field would look like a change and rebuild the microphone.
+        let settings = Settings {
+            input_device: "  ".to_string(),
+            ..Settings::default()
+        };
+        assert_eq!(
+            crate::hub::CaptureConfig::of(&settings),
+            crate::hub::CaptureConfig::of(&Settings::default()),
+        );
+    }
+
+    #[test]
+    fn saving_reloads_only_when_capture_settings_moved() {
+        // End to end through the hub, which is what decides: the notification is
+        // sent by the app, not by the panel, so a panel that forgot to ask could
+        // not be caught by testing the panel.
+        let (mut hub, _messages) = Hub::new(Settings::default());
+        let state = hub.state();
+
+        let seen = state
+            .watch_capture()
+            .expect("the channel exists once watched");
+        assert!(!seen.has_changed().unwrap_or(false), "no notice yet");
+
+        // A colour-only save must not wake the microphone.
+        let colour = Settings {
+            overlay_theme: "neon".to_string(),
+            ..Settings::default()
+        };
+        assert!(!hub.apply_saved_settings(colour), "not a capture change");
+        assert!(
+            !seen.has_changed().unwrap_or(false),
+            "the microphone must not be woken for a colour change",
+        );
+
+        // A model change must.
+        let model = Settings {
+            engine: local("/models/other.bin"),
+            ..hub.settings().clone()
+        };
+        assert!(hub.apply_saved_settings(model), "a model change counts");
+        assert!(
+            seen.has_changed().unwrap_or(false),
+            "the microphone must be woken for a model change",
+        );
+    }
+
+    #[tokio::test]
+    async fn a_notice_that_moves_nothing_does_not_end_the_wait() {
+        // The reason the supervisor compares rather than rebuilding on every
+        // wakeup. A save that rewrites the settings file without moving the
+        // microphone sends a notice like any other; rebuilding then would take
+        // the microphone down and cost the streamer a word for nothing.
+        let (_tx, mut rx) = tokio::sync::watch::channel(CaptureNotice);
+        let settings = Settings::default();
+        let running = crate::hub::CaptureConfig::of(&settings);
+
+        let woke = tokio::time::timeout(
+            std::time::Duration::from_millis(50),
+            wait_for_capture_change(&mut rx, &settings, &running),
+        )
+        .await;
+
+        assert!(
+            woke.is_err(),
+            "a notice that did not move the microphone must not end the wait",
+        );
+    }
+
+    #[tokio::test]
+    async fn the_real_channel_carries_a_model_change_to_the_wait() {
+        // The two halves above are checked in isolation: the comparison, and the
+        // channel. This is them together, through `AppState` — the actual path a
+        // save takes, since the panel has a session entity and not a hub.
+        //
+        // Without it, a notice that never reached the watcher would leave every
+        // other test here passing and the microphone loading its model once and
+        // never again.
+        let state = yap_server::AppState::shared();
+        let mut notices = state
+            .watch_capture()
+            .expect("the channel exists once watched");
+
+        let running = crate::hub::CaptureConfig::of(&Settings::default());
+
+        // Nothing has moved, so the wait must hold even though the channel is
+        // live and sendable.
+        let quiet = Settings::default();
+        assert!(
+            tokio::time::timeout(
+                std::time::Duration::from_millis(100),
+                wait_for_capture_change(&mut notices, &quiet, &running),
+            )
+            .await
+            .is_err(),
+            "the wait must not end before anything changes",
+        );
+
+        // What the panel does on save.
+        state.notify_capture_changed();
+
+        let moved = Settings {
+            engine: local("/models/other.bin"),
+            ..Settings::default()
+        };
+        let fired = tokio::time::timeout(
+            std::time::Duration::from_millis(500),
+            wait_for_capture_change(&mut notices, &moved, &running),
+        )
+        .await;
+
+        assert!(
+            matches!(fired, Ok(true)),
+            "a model change must reach the microphone thread and be acted on",
+        );
+    }
+
+    #[tokio::test]
+    async fn a_notice_that_moves_the_microphone_ends_the_wait() {
+        let (_tx, mut rx) = tokio::sync::watch::channel(CaptureNotice);
+        let running = crate::hub::CaptureConfig::of(&Settings::default());
+
+        let moved = Settings {
+            engine: local("/models/other.bin"),
+            ..Settings::default()
+        };
+
+        assert!(
+            wait_for_capture_change(&mut rx, &moved, &running).await,
+            "a model change must end the wait so the microphone can rebuild",
+        );
     }
 }

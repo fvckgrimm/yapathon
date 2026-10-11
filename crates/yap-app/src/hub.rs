@@ -60,6 +60,32 @@ fn forward_snapshots(state: &Arc<AppState>, messages: &async_channel::Sender<Mod
 ///
 /// Not `Debug`: it holds the session state, which is behind a lock and has no
 /// useful printed form.
+/// Everything the microphone thread needs, and nothing else.
+///
+/// Grouped because these three are passed to `Listener::start` together and
+/// because "did the streamer change something that needs a restart" is a
+/// question about all of them at once. Split across the settings file, where a
+/// comparison would have to pick the right fields by hand and would silently
+/// miss the next one that is threaded into the same call.
+#[derive(Debug, Clone, PartialEq)]
+pub struct CaptureConfig {
+    pub engine: yap_core::settings::EngineChoice,
+    pub input_device: String,
+    pub vad: yap_core::engine::VadConfig,
+}
+
+impl CaptureConfig {
+    pub fn of(settings: &yap_core::settings::Settings) -> Self {
+        Self {
+            engine: settings.engine.clone(),
+            // Trimmed because it comes from a text field, and a whitespace-only
+            // value means "the system default" rather than a device named " ".
+            input_device: settings.input_device.trim().to_string(),
+            vad: settings.vad,
+        }
+    }
+}
+
 #[derive(Clone)]
 pub struct Hub {
     state: Arc<AppState>,
@@ -123,6 +149,54 @@ impl Hub {
             },
             receiver,
         )
+    }
+
+    /// What would be substituted for this engine, if anything.
+    ///
+    /// Asked of the loader rather than carried from startup, because after a
+    /// reload the model is a *different* one and the substitution computed for
+    /// the original says nothing about it. Reusing the startup answer is how a
+    /// reload could silently fall back to a model nobody asked for.
+    pub fn model_substitution_for(
+        &self,
+        engine: &yap_core::settings::EngineChoice,
+    ) -> Option<yap_core::settings::ModelSubstitution> {
+        let candidates = yap_core::settings::discover_models();
+
+        let (repaired, substitution) = yap_core::settings::repair_model_path_reporting(
+            yap_core::settings::Settings {
+                engine: engine.clone(),
+                ..Default::default()
+            },
+            &candidates,
+        );
+
+        // The repaired engine is discarded: this only answers "would you warn",
+        // and the engine that actually loads is built by the caller.
+        let _ = repaired;
+        substitution
+    }
+
+    /// Replace the settings after a save, and tell the listener if the engine moved.
+    ///
+    /// Returns whether the recognition settings actually changed. A save that
+    /// only changed the overlay's colours returns `false`, and the microphone
+    /// is left alone — tearing it down mid-stream to apply a colour change would
+    /// cost the streamer a word or two of counting for nothing.
+    pub fn apply_saved_settings(&mut self, saved: yap_core::settings::Settings) -> bool {
+        let before = CaptureConfig::of(&self.settings);
+        let after = CaptureConfig::of(&saved);
+        let capture_changed = before != after;
+
+        self.settings = Arc::new(saved);
+
+        if capture_changed {
+            // Only the microphone cares, and only when what it is using moved.
+            // A colour change must not interrupt someone's stream.
+            self.state.notify_capture_changed();
+        }
+
+        capture_changed
     }
 
     /// What the settings loader swapped, if it swapped anything.
