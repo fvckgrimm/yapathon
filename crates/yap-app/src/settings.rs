@@ -284,21 +284,22 @@ const fn event_field(key: &'static str, label: &'static str, help: &'static str)
     }
 }
 
-/// What one event is worth, in words.
+/// One platform's worth of event prices.
 ///
-/// Empty means "worth nothing", which is different from "unpriced": a blank
-/// box is a decision, and an unpriced event grants nothing either way.
+/// Empty means "worth nothing", which is different from "unpriced": a blank box
+/// is a decision, and an unpriced event grants nothing either way.
 ///
-/// Every kind the app can emit, for every platform it can emit it from. The
-/// list is here rather than derived, because `SETTINGS_SECTIONS` is a `const`
-/// and a field per event is what makes a price reachable at all — the previous
-/// list covered Twitch only, so there was no way to price a Super Chat or a
-/// YouTube subscriber from the panel even though both arrived.
+/// Split per platform rather than one long list. Twenty fields in a single
+/// section is a wall, and the ones that matter are scattered through it — a
+/// streamer enabling YouTube had to hunt past ten Twitch rows to find the Super
+/// Chat, and gave up, which is what made it look like the option did not exist.
+/// Four short sections read as "these are the platforms you can turn on", which
+/// is what they are.
 ///
-/// Blank fields cost nothing: they are removed from `event_words` on save
-/// rather than stored as a zero.
-const EVENTS: &[Field] = &[
-    // -- Twitch, from either EventSub or Astro ----------------------------
+/// Blank fields cost nothing: they are removed from `event_words` on save rather
+/// than stored as a zero.
+const EVENTS_TWITCH: &[Field] = &[
+    // From either Twitch's own EventSub or Astro. Same prices either way.
     event_field("event_twitch_follow", "Follower", "each one, flat"),
     event_field("event_twitch_sub", "New subscriber", "first month, flat"),
     event_field(
@@ -337,7 +338,10 @@ const EVENTS: &[Field] = &[
         "Merch (per unit)",
         "the basket's total",
     ),
-    // -- YouTube, from Astro ---------------------------------------------
+];
+
+/// YouTube prices. From Astro only — see [Astro](docs/astro.md).
+const EVENTS_YOUTUBE: &[Field] = &[
     event_field(
         "event_youtube_subscriber",
         "Channel subscriber",
@@ -361,7 +365,10 @@ const EVENTS: &[Field] = &[
         "Merch (per unit)",
         "the basket's total",
     ),
-    // -- Kick, from Astro -------------------------------------------------
+];
+
+/// Kick prices. From Astro only.
+const EVENTS_KICK: &[Field] = &[
     event_field("event_kick_follow", "Follower", "each one, flat"),
     event_field("event_kick_sub", "Subscriber", "each one, flat"),
     event_field(
@@ -370,9 +377,14 @@ const EVENTS: &[Field] = &[
         "scales with the gift",
     ),
     event_field("event_kick_tip", "Tip (per unit)", "what was spent"),
-    // -- Anything, from chat ----------------------------------------------
-    event_field("event_chat_command", "Chat !command", "someone typing !yap"),
 ];
+
+/// Chat prices. Not a platform — this is the local HTTP API and `!yap`.
+const EVENTS_CHAT: &[Field] = &[event_field(
+    "event_chat_command",
+    "Chat !command",
+    "someone typing !yap",
+)];
 
 /// Every setting, grouped.
 pub const SETTINGS_SECTIONS: &[Section] = &[
@@ -381,8 +393,20 @@ pub const SETTINGS_SECTIONS: &[Section] = &[
         fields: ENGINE,
     },
     Section {
-        title: "Events",
-        fields: EVENTS,
+        title: "Events · Twitch",
+        fields: EVENTS_TWITCH,
+    },
+    Section {
+        title: "Events · YouTube",
+        fields: EVENTS_YOUTUBE,
+    },
+    Section {
+        title: "Events · Kick",
+        fields: EVENTS_KICK,
+    },
+    Section {
+        title: "Events · Chat",
+        fields: EVENTS_CHAT,
     },
     Section {
         title: "Goal",

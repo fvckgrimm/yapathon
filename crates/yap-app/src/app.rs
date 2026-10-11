@@ -246,27 +246,6 @@ fn start_twitch(hub: &Hub) {
 /// One connection per token, because a token is scoped to one platform account
 /// and a cross-streaming streamer has more than one.
 fn start_astro(hub: &Hub) {
-    let sources = reconcile_sources(astro_accounts(), native_twitch_configured(hub.settings()));
-
-    for platform in &sources.dropped {
-        // Named precisely, because "something was ignored" is the kind of
-        // message that gets read once and then not again.
-        log::warn!(
-            "astro: not connecting the {platform} account — twitch is also set up \
-             natively, and running both would count every cheer, sub and raid twice. \
-             Clear the native Twitch settings to use Astro for {platform} instead"
-        );
-        hub.report(ModelMessage::Warning(format!(
-            "{platform}: native Twitch is configured, so Astro is not connecting it too — \
-             running both would count events twice"
-        )));
-    }
-
-    let accounts = sources.kept;
-    if accounts.is_empty() {
-        return;
-    }
-
     // Read here rather than lazily on the first simulated event, so the warning
     // that this build is counting fake cheers appears at launch — where it can
     // still stop the stream — rather than after one has already been counted.
@@ -277,11 +256,49 @@ fn start_astro(hub: &Hub) {
     // Astro names events `<platform>:<kind>`, the same shape EventSub uses, so
     // the prices a streamer already set carry over rather than silently
     // re-pricing itself to nothing on the day they switch.
-    let platform = AstroPlatform::new(accounts, astro_pricing(hub.settings()));
+    let pricing = astro_pricing(hub.settings());
+    let twitch_native = native_twitch_configured(hub.settings());
+    let hub = hub.clone();
 
-    let sink: Arc<dyn EventSink> = Arc::new(StateEventSink { hub: hub.clone() });
-
+    // **Nothing that can block happens on this thread.**
+    //
+    // `astro_accounts` reads the credential store, and a *locked* keyring makes
+    // the client wait for an unlock prompt that a desktop app cannot answer —
+    // it does not error, it hangs, for as long as the keyring stays locked.
+    //
+    // This function runs while the window is being constructed, so blocking here
+    // means the window is never presented: the app looks like it failed to
+    // launch, with no error anywhere. It did exactly that, and the comment above
+    // `start_astro` promised the opposite.
+    //
+    // The same reading is already on a background task in `start_twitch`, which
+    // is why a locked keyring hung Astro and not Twitch.
     runtime::spawn(async move {
+        let sources = reconcile_sources(astro_accounts(), twitch_native);
+
+        for platform in &sources.dropped {
+            // Named precisely, because "something was ignored" is the kind of
+            // message that gets read once and then not again.
+            log::warn!(
+                "astro: not connecting the {platform} account — twitch is also set up \
+                 natively, and running both would count every cheer, sub and raid twice. \
+                 Clear the native Twitch settings to use Astro for {platform} instead"
+            );
+            hub.report(ModelMessage::Warning(format!(
+                "{platform}: native Twitch is configured, so Astro is not connecting it too — \
+                 running both would count events twice"
+            )));
+        }
+
+        let accounts = sources.kept;
+        if accounts.is_empty() {
+            log::info!("astro: no tokens configured, not connecting");
+            return;
+        }
+
+        let platform = AstroPlatform::new(accounts, pricing);
+        let sink: Arc<dyn EventSink> = Arc::new(StateEventSink { hub });
+
         log::info!("astro: connecting");
         if let Err(error) = platform.run(sink).await {
             log::warn!("astro stopped: {error:#}");

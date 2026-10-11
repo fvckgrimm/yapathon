@@ -281,6 +281,19 @@ pub struct SettingsView {
     /// constant below, so a change to whether credentials are masked cannot
     /// update one and miss the other.
     secret_masks: BTreeMap<String, bool>,
+    /// Whether each credential is set, resolved off the render thread.
+    ///
+    /// `render_secret_field` needs this to decide what to draw, and reading the
+    /// keyring to find out is the same mistake as reading it during window
+    /// construction: a locked keyring does not error, it blocks, and this runs
+    /// on the GPUI thread — so the settings panel would freeze solid with no
+    /// error rather than merely showing nothing.
+    ///
+    /// Resolved in the background at construction and refreshed whenever a
+    /// credential is set or cleared. The value only changes when this panel
+    /// changes it, so a cached answer cannot be stale in a way anyone would
+    /// notice.
+    secret_states: BTreeMap<String, yap_core::secrets::SecretState>,
     /// The keyring entry each credential field's value belongs in.
     ///
     /// Resolved from the settings this panel was built with. Carrying it here
@@ -366,6 +379,8 @@ impl SettingsView {
         let mut secret_inputs: BTreeMap<String, Entity<gpui_kit::component::input::InputState>> =
             BTreeMap::new();
         let mut secret_masks: BTreeMap<String, bool> = BTreeMap::new();
+        let mut secret_states: BTreeMap<String, yap_core::secrets::SecretState> = BTreeMap::new();
+
         // Where each credential actually lives. Resolved here rather than at
         // render time because the service is configurable, and reading it from
         // the settings the panel was built with keeps the address in one place
@@ -390,6 +405,15 @@ impl SettingsView {
                     secret_entries.insert(field.key.to_string(), entry);
                 }
             }
+        }
+
+        // Asked on the thread that is allowed to wait for it, which is this one:
+        // the panel does not exist yet, so nothing is being drawn and nothing can
+        // freeze. Each answer is a round trip to the credential store, and a
+        // locked store turns each one into an indefinite wait — which is why
+        // this is here and not in `render`.
+        for (key, (service, user)) in &secret_entries {
+            secret_states.insert(key.clone(), yap_core::secrets::state(service, user));
         }
 
         let mut subscriptions: Vec<Subscription> = Vec::with_capacity(inputs.len());
@@ -424,6 +448,7 @@ impl SettingsView {
                 inputs,
                 secret_inputs,
                 secret_masks,
+                secret_states,
                 secret_entries,
                 subscribed_keys: subscribed,
                 path,
@@ -632,6 +657,10 @@ impl SettingsView {
                         field,
                         self.secret_inputs.get(field.key).cloned(),
                         self.secret_entries.get(field.key).cloned(),
+                        self.secret_states
+                            .get(field.key)
+                            .copied()
+                            .unwrap_or(yap_core::secrets::SecretState::Absent),
                         me,
                         cx,
                     )
@@ -1175,6 +1204,7 @@ fn render_secret_field(
     field: &Field,
     input: Option<Entity<gpui_kit::component::input::InputState>>,
     entry: Option<(String, &'static str)>,
+    state: yap_core::secrets::SecretState,
     me: &gpui::WeakEntity<SettingsView>,
     cx: &mut App,
 ) -> impl IntoElement {
@@ -1189,7 +1219,7 @@ fn render_secret_field(
             .child("no credential location is configured for this field");
     };
 
-    let state = yap_core::secrets::state(&service, user);
+    // Read from the cache, never from the keyring: this runs while drawing.
     let (status, can_set) = secret_status(state);
 
     let mut row = div().flex().flex_col().gap_1().child(
@@ -1278,6 +1308,17 @@ fn render_secret_field(
             ok_input.update(cx, |state, cx| state.set_value(String::new(), _window, cx));
 
             let _ = ok_me.update(cx, |this, cx| {
+                // The outcome is the answer, so it is not re-read. Another store
+                // round trip here would be another thing that can block the GPUI
+                // thread for as long as a keyring stays locked, in exchange for
+                // a fact we were just told.
+                if result.is_ok() {
+                    this.secret_states.insert(
+                        key.to_string(),
+                        yap_core::secrets::SecretState::Present,
+                    );
+                }
+
                 this.settings.notice = Some(match &result {
                     Ok(()) => format!("{key} stored"),
                     Err(error) => format!("could not store {key}: {error:#}"),
@@ -1306,6 +1347,10 @@ fn render_secret_field(
                     let failed = result.is_err();
 
                     let _ = clear_me.update(cx, |this, cx| {
+                        // Same: the clear either happened or it did not.
+                        this.secret_states
+                            .insert(key.to_string(), yap_core::secrets::SecretState::Absent);
+
                         this.settings.notice = Some(match &result {
                             Ok(true) => format!("{key} cleared"),
                             Ok(false) => format!("{key} was not set"),
@@ -2281,6 +2326,36 @@ mod tests {
         );
     }
 
+    /// Whether this machine's credential store can be **written to**.
+    ///
+    /// Probed on a thread with a deadline, because the failure mode is a **hang**
+    /// rather than an error, and it took a while to find: three tests here sat
+    /// for over a minute each on a locked keyring, and a run that is stuck looks
+    /// like a run that is working.
+    ///
+    /// The probe is a *write* to a throwaway name. A read is the wrong probe and
+    /// was the wrong probe for a while: reading an entry that does not exist
+    /// answers `NoEntry` immediately even when the collection is locked, so the
+    /// guard passed and the test then blocked on the first `set` — appearing to
+    /// prove nothing at all was wrong.
+    ///
+    /// Writing is what needs the collection unlocked, so that is what is asked.
+    fn store_answers() -> bool {
+        use std::sync::mpsc;
+        use std::time::Duration;
+
+        let (tx, rx) = mpsc::channel();
+        let service = yap_core::settings::credential_name("astro");
+
+        std::thread::spawn(move || {
+            let probe = yap_core::secrets::set(&service, "yap-test-probe", "probe");
+            let _ = yap_core::secrets::remove(&service, "yap-test-probe");
+            let _ = tx.send(probe.is_ok());
+        });
+
+        matches!(rx.recv_timeout(Duration::from_secs(5)), Ok(true))
+    }
+
     #[test]
     fn a_credential_set_in_the_panel_is_readable_by_the_platform_that_needs_it() {
         // The test that matters most in this file, and the one whose absence let
@@ -2296,7 +2371,12 @@ mod tests {
         // So this goes through the real loader rather than through the mapping
         // that produced the address. Testing the mapping would only prove the
         // mapping is consistent with itself.
-        use yap_core::secrets::{SecretState, remove, set, state};
+        use yap_core::secrets::{remove, set};
+
+        if !store_answers() {
+            eprintln!("skipping: this machine's credential store did not answer");
+            return;
+        }
 
         let field = SETTINGS_SECTIONS
             .iter()
@@ -2325,9 +2405,8 @@ mod tests {
              silently send nothing",
         );
 
-        if matches!(state(&service, user), SecretState::Unavailable) {
-            // Nothing to check on a machine with no keyring. The refusal paths
-            // are covered in yap-core.
+        if !store_answers() {
+            eprintln!("skipping: this machine's credential store did not answer");
             return;
         }
 
@@ -2411,7 +2490,12 @@ mod tests {
     fn the_cloud_key_is_readable_under_the_address_the_panel_prompts_for() {
         // The same property for the other credential, because they have
         // different `user` values and different ways of naming their service.
-        use yap_core::secrets::{SecretState, remove, set, state};
+        use yap_core::secrets::{remove, set};
+
+        if !store_answers() {
+            eprintln!("skipping: this machine's credential store did not answer");
+            return;
+        }
 
         let field = SETTINGS_SECTIONS
             .iter()
@@ -2432,10 +2516,6 @@ mod tests {
             "a custom credential name must be honoured, or the prompt writes \
              somewhere the engine never looks",
         );
-
-        if matches!(state(&service, user), SecretState::Unavailable) {
-            return;
-        }
 
         assert!(set(&service, user, "gsk_test_key").is_ok());
 

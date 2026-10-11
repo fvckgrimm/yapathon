@@ -29,6 +29,22 @@
 //! - `user` is what the entry *is*: `user-token` for a Twitch token, `api-key`
 //!   for a cloud speech key.
 //!
+//! ## Nothing here blocks forever
+//!
+//! A **locked** keyring is the failure that matters, and it is not an error —
+//! the client waits for an unlock prompt that a desktop application has no way
+//! to answer. It waits indefinitely. So a keyring call made on the GPUI thread
+//! freezes the window solid with nothing on screen and nothing in the log, and
+//! the same call in a test hangs the suite rather than failing it. Both
+//! happened.
+//!
+//! Every call here therefore runs on its own thread with a deadline, and a
+//! timeout is reported as [`SecretState::Unavailable`] rather than waited on.
+//!
+//! The cost is honest and worth stating: a write that times out may still have
+//! succeeded on the thread that is still waiting. That is preferable to hanging
+//! forever, and it cannot be avoided — the alternative is no bound at all.
+//!
 //! Everything that reads or writes a credential goes through here. That is not
 //! tidiness: the prompt and the platform loaders originally used different
 //! addresses, so the prompt would have said "stored" while the platform looked
@@ -60,7 +76,8 @@ pub enum SecretState {
 /// A masked input pre-filled with the real value would defeat the masking, and
 /// rendering even a length is more than the question needs answered.
 pub fn state(service: &str, user: &str) -> SecretState {
-    match entry(service, user) {
+    let (service, user) = (service.to_string(), user.to_string());
+    bounded(move || match entry(&service, &user) {
         // Building the entry fails when the platform has no store at all,
         // which is `Unavailable` for the same reason a failing read is.
         Err(_) => SecretState::Unavailable,
@@ -71,7 +88,8 @@ pub fn state(service: &str, user: &str) -> SecretState {
             // is not answering, which is not the same as holding nothing.
             Err(_) => SecretState::Unavailable,
         },
-    }
+    })
+    .unwrap_or(SecretState::Unavailable)
 }
 
 /// Read a credential.
@@ -81,10 +99,22 @@ pub fn state(service: &str, user: &str) -> SecretState {
 /// treat them differently: "no token set, ask for one" versus "this machine
 /// cannot give you a token".
 pub fn get(service: &str, user: &str) -> anyhow::Result<Option<String>> {
-    match entry(service, user)?.get_password() {
-        Ok(value) => Ok(Some(value)),
-        Err(keyring::Error::NoEntry) => Ok(None),
-        Err(error) => Err(anyhow::anyhow!("could not read {service}/{user}: {error}")),
+    let where_ = format!("{service}/{user}");
+    let (service, user) = (service.to_string(), user.to_string());
+
+    match bounded(move || match entry(&service, &user) {
+        Err(error) => Err(error.to_string()),
+        Ok(entry) => match entry.get_password() {
+            Ok(value) => Ok(Some(value)),
+            Err(keyring::Error::NoEntry) => Ok(None),
+            Err(error) => Err(format!("could not read {service}/{user}: {error}")),
+        },
+    }) {
+        Some(Ok(value)) => Ok(value),
+        Some(Err(error)) => Err(anyhow::anyhow!(error)),
+        None => Err(anyhow::anyhow!(
+            "credential store did not answer for {where_}"
+        )),
     }
 }
 
@@ -104,14 +134,28 @@ pub fn set(service: &str, user: &str, value: &str) -> anyhow::Result<()> {
         anyhow::bail!("a credential cannot be empty — use remove to clear it");
     }
 
-    entry(service, user)?
-        .set_password(trimmed)
-        .map_err(|error| anyhow::anyhow!("could not save {service}/{user}: {error}"))?;
+    let where_ = format!("{service}/{user}");
+    let (service, user, trimmed) = (service.to_string(), user.to_string(), trimmed.to_string());
+
+    match bounded(move || match entry(&service, &user) {
+        Err(error) => Err(error.to_string()),
+        Ok(entry) => entry
+            .set_password(&trimmed)
+            .map_err(|error| format!("could not save {service}/{user}: {error}")),
+    }) {
+        Some(Ok(())) => {}
+        Some(Err(error)) => return Err(anyhow::anyhow!(error)),
+        None => {
+            return Err(anyhow::anyhow!(
+                "credential store did not answer — {where_} may or may not have been saved"
+            ));
+        }
+    }
 
     // The value is deliberately absent from the error path and from every log
     // line below. `keyring`'s own errors do not carry the secret, and neither
     // does anything here.
-    log::info!("stored credential {service}/{user}");
+    log::info!("stored credential {where_}");
     Ok(())
 }
 
@@ -133,6 +177,37 @@ pub fn remove(service: &str, user: &str) -> anyhow::Result<bool> {
         Err(error) => Err(anyhow::anyhow!(
             "could not remove {service}/{user}: {error}"
         )),
+    }
+}
+
+/// How long a keyring call may take before it is treated as unavailable.
+///
+/// Long enough that a working store never trips it, including on a cold D-Bus
+/// connection. Short enough that a locked one cannot stop the app launching.
+const TIMEOUT_SECONDS: u64 = 5;
+
+/// Run a keyring operation with a deadline.
+///
+/// Returns `None` when the deadline passed, which means the store did not
+/// answer — not that it said no.
+fn bounded<T: Send + 'static>(operation: impl FnOnce() -> T + Send + 'static) -> Option<T> {
+    use std::sync::mpsc;
+    use std::time::Duration;
+
+    let (tx, rx) = mpsc::channel();
+    std::thread::spawn(move || {
+        let _ = tx.send(operation());
+    });
+
+    match rx.recv_timeout(Duration::from_secs(TIMEOUT_SECONDS)) {
+        Ok(value) => Some(value),
+        Err(_) => {
+            log::warn!(
+                "credential store did not answer within {TIMEOUT_SECONDS}s — it is \
+                 probably locked. Treating as unavailable."
+            );
+            None
+        }
     }
 }
 
@@ -263,7 +338,14 @@ mod tests {
     ///
     /// Not asserted on — a CI box with no keyring would fail the test above it
     /// — so it only gates the one assertion that needs a live store.
+    /// Whether this machine's credential store accepts a write.
+    ///
+    /// A **write** probe, deliberately. A read of an entry that does not exist
+    /// answers `NoEntry` instantly even when the collection is locked, so a
+    /// read-based guard passes on a machine that cannot store anything and the
+    /// test then fails on its first `set` — appearing to prove nothing was
+    /// wrong. Writing is what needs the collection unlocked.
     fn store_works() -> bool {
-        !matches!(state(SERVICE, NEVER_SET), SecretState::Unavailable)
+        set(SERVICE, "yap-test-probe", "probe").is_ok()
     }
 }

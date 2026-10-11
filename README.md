@@ -8,694 +8,111 @@ control dock and an on-stream overlay — and OBS loads them as a Custom Dock an
 a Browser Source. One Rust codebase covers Windows, macOS and Linux with nothing
 OBS-specific to build, sign or maintain.
 
-## How counting works
+## Why this exists
 
-The one rule everything else follows from:
+My fucking guys [speedy](https://www.youtube.com/@KYRSP33DY) and
+[side](https://www.youtube.com/@SideArms4Reason) kept joking about running a
+yapathon on stream. I wanted to find out whether one was actually possible, and
+had no experience building anything for streams beyond archiving them. This is
+the answer: it works, and the interesting part turned out to be everything
+around it.
 
-> **A word is counted only from a complete utterance.**
+I am a viewer, not a collaborator, and they have not asked for this — but if
+either of you ever run one, the whole thing is a binary and a settings file.
 
-Audio is gated by voice activity detection. The segmenter buffers until silence,
-transcribes that utterance once, counts its tokens, and discards the buffer. No
-recogniser ever sees partial audio.
+## Built with AI
 
-This matters because of what the alternative does. Feed a rolling window to
-whisper and it re-reads overlapping audio, reporting the same sentence twice —
-so the count inflates quietly, with no error anywhere. Counting interim results
-from a streaming API has the same defect at segment boundaries. Both are avoided
-by keeping utterance finalisation above the engine, so no engine can be asked to
-transcribe something that might still change.
+Written with Claude, an LLM assistant, throughout — including the tests. Roughly
+everything in this repository was produced with AI assistance rather than typed.
 
-Two further guards against invented words, which would corrupt the score
-directly:
+Worth saying plainly rather than leaving it to be discovered: AI-written code
+carries the failure modes AI code carries, and this project's is unusually
+consistent. There were seven bugs where a value was computed correctly and then
+silently discarded — a button wired to nothing, a repaint never requested, a
+price read into a map that nothing then looked up. None of them threw an error.
+None of them were visible from the screen. That is worth knowing before you trust
+any of it, and it is why there are as many tests as there are.
 
-- The segmenter's RMS energy floor rejects audio too quiet to be speech, before
-  an engine sees it.
-- Segments whisper itself reports as non-speech (`no_speech_probability`) are
-  discarded.
+## Quickstart
 
-## Layout
-
-| Crate | Responsibility |
-| ----- | -------------- |
-| `yap-core` | Counting rules, goal math, session state, the engine trait |
-| `yap-voice` | Microphone capture, VAD segmentation, whisper.cpp and Groq engines |
-| `yap-events` | Twitch EventSub and chat commands behind a `ChatPlatform` trait |
-| `yap-server` | Local HTTP + WebSocket API, and the two pages OBS loads |
-| `yap-app` | GPUI window, and the wiring between all of the above |
-
-`yap-core` has no audio, no network and no window, so every rule that decides
-whether a count is fair is testable by feeding it text.
-
-## Modes
-
-Chosen per yapathon, from the **Run tab's mode buttons** — not from the settings
-file. The goal and limit fields sit directly under them and re-label themselves
-when the mode changes (`Goal (words)` becomes `Clock (seconds)`), because typing a
-duration into a field labelled "words" is how a run ends up wrong by a factor of
-a hundred and nobody notices until it is over.
-
-- **Fixed** — the goal never moves. Events grant score only.
-- **Extend** — the goal grows by each event's bonus. The classic chat-extends-the-
-  goal run, and the one that needs a hard limit.
-- **Time** — the goal is a duration and events extend the clock.
-
-The hard limit is what makes an extend run terminate. Without it a busy chat
-makes the run unbounded; with it, reaching the cap ends the run and says so.
-
-Empty means "no limit", which is a legitimate choice. A goal that is empty or
-zero falls back to 5,000 rather than starting a yapathon that is over before it
-begins. `5,000` and `2k` are both accepted.
-
-The app window is the place to run a yapathon from. It has the mode, goal, limit,
-start/pause/resume/undo/end, and the correction tools. The dock page at `/dock`
-has the same run controls as a fallback for when the window did not open or OBS
-is on another machine; `/overlay` is only ever the on-stream card.
-
-### When the count appears
-
-Nothing is counted mid-sentence. Audio is buffered until a pause, and the whole
-utterance is transcribed once — never a rolling window, which double-counts
-every word that spans two windows, and never interim results, which double-count
-at every segment boundary. That is a deliberate trade: the count is honest and
-late rather than live and wrong.
-
-How late is bounded by the model. On CPU with `small.en` an utterance takes a
-couple of seconds; on a GPU it is close to instant. `whisper_backend_init_gpu:
-no GPU found` in the log means the CPU path, which is expected and not an error —
-`small.en` is a reasonable size for it. If you want faster, a smaller model or a
-GPU backend both help; if you want more accurate, a larger model is the trade and
-it will be slower still.
-
-## Running
+**1. Build it.**
 
 ```sh
-cargo run --release
+git clone <this repo> && cd yap-a-thon
+cargo build --release
+./target/release/yap-a-thon
 ```
 
-A debug build is slow enough to matter here: whisper on CPU is the bottleneck.
-
-Then point OBS at the URL the app prints:
-
-```
-yap-a-thon: dock at http://127.0.0.1:8973/dock
-yap-a-thon: overlay at http://127.0.0.1:8973/overlay
-```
-
-The overlay URL is also in the app window at the bottom of the Run tab, and
-**clicking it copies it** — no typing a loopback address by hand.
-
-The dock is either the app's own window, a normal browser tab, or an OBS Custom
-Dock (**View → Docks → Custom Browser Docks**, then add
-`http://127.0.0.1:8973/dock`).
-
-Closing the window does not stop the app or the server — see
-[The server outlives the window](#the-server-outlives-the-window) below.
-
-## Getting the overlay into OBS
-
-This is the part that catches people, so it is worth being precise.
-
-The window's Run tab has the URL in a chip at the bottom — **click it and it
-copies**. Then in your scene: **Sources → + → Browser**.
-
-| Setting | Value |
-| ------- | ----- |
-| URL | `http://127.0.0.1:8973/overlay` (click it in the app to copy) |
-| Width | `480` (or your scene width) |
-| Height | `270` (or your scene height) |
-
-The overlay polls `/api/state` every two seconds as well as subscribing to the
-WebSocket, because OBS's CEF blocks WebSockets to private-network addresses on
-some configurations and a source whose only feed is the socket would then sit on
-its initial state forever.
-
-It starts visible even with no yapathon running — it says "no yapathon" rather
-than showing nothing — so an empty source is always distinguishable from a broken
-one.
-
-### If the Browser Source shows nothing
-
-Work down this list in order. Each step rules out a different cause, and the
-first two are one screenshot each rather than a guess.
-
-**1. Is the app running?**
-
-```sh
-curl -s http://127.0.0.1:8973/ping
-```
-
-That prints `ok`. If it hangs or refuses, the app is not running — start it and
-watch for the two URL lines it prints.
-
-**2. Can OBS reach the app at all?**
-
-Put this URL in a Browser Source:
-
-```
-http://127.0.0.1:8973/ping
-```
-
-Just `ok` in tiny text, but visible. Plain text goes through no CSS engine, no
-layout and no JavaScript, so if you see it, the network path is fine and the
-problem is in the page. **If this shows nothing, stop reading this list** — it is
-not a CSS problem:
-
-- **Is the app still running?** Closing the dock window does *not* stop the server
-  (that used to be a bug here), but quitting the app does.
-- **Is the source in the scene you are streaming?** It has to be in the scene
-  selected under *Scene* in the preview, and the preview has to be showing. A
-  source can be perfectly correct and invisible if the scene is not active.
-- **Is "Shutdown source when not visible" checked?** It is off by default. If it
-  is on, OBS tears the page down whenever the source is not in the active scene,
-  and a source whose scene is never active never loads at all.
-
-**3. Does the page itself render?**
-
-```
-http://127.0.0.1:8973/overlay?debug=1
-```
-
-The whole canvas goes solid magenta with the URL, viewport size and whether the
-API answered.
-
-- **Magenta** → OBS is loading the page fine and something in the overlay's own
-  styling does not render. Carry on to step 4.
-- **Nothing** → OBS is not loading the page, which is step 2 again.
-
-**4. Strip it back to what OBS definitely renders.**
-
-```
-http://127.0.0.1:8973/overlay?opaque=1
-```
-
-Same overlay, but the card's background is fully opaque instead of
-`rgba(16,16,20,0.92)`. If this shows and the default does not, your GPU path is
-having trouble compositing alpha, and this URL is the workaround.
-
-**5. Check the two remaining silent causes.**
-
-- **Width and height are zero.** A Browser Source defaults to a usable size, but
-  one created from copied settings or resized to nothing has nothing to draw
-  into. The card needs at least 16rem of width.
-- **Stale cache.** CEF caches hard. The page is served `no-store`, but if you
-  have changed the app and still see the old build, right-click the source →
-  Refresh rather than adding a query string.
-
-### A note on `backdrop-filter`
-
-The card has no `backdrop-filter`, and that is deliberate. OBS's CEF does not
-render it reliably — it can promote the element into a compositing layer that
-comes back empty, taking the card with it, while the same page looks perfect in a
-real browser. That is exactly the failure this overlay had: valid DOM, correct
-layout, nothing on screen in OBS. The same goes for `filter`, `text-shadow` and
-`mix-blend-mode`. There is a test that fails if any of them reappear.
-
-### The server outlives the window
-
-Closing the dock window leaves the app running so the overlay keeps working.
-That is on purpose: the HTTP server OBS reads lives in this process, so quitting
-on window-close blanked the overlay mid-stream for anyone who closed the window
-to get it out of the way. Stop the app from the terminal or your window manager
-when you are done.
-
-## Looks
-
-Both the window and the overlay are themeable, and neither requires anything to
-be installed to try one.
-
-**The overlay** — what viewers see. Five looks, set in Settings → Server, or
-previewed one at a time by editing the URL:
-
-```
-http://127.0.0.1:8973/overlay?theme=minimal
-```
-
-| Theme | What it is |
-| ----- | ---------- |
-| `card` | the default: a dark rounded panel, bottom-right |
-| `minimal` | square, borderless, quiet, top-left |
-| `cute` | pastel and pill-shaped |
-| `neon` | hard corners, one electric accent, a glow |
-| `mono` | greyscale and small |
-
-`?theme=` beats the setting, so comparing looks means editing a URL in a browser
-and copying the winner into OBS. `?opaque=1` still works on every theme, for a
-GPU path where the card's alpha composites to nothing.
-
-**The URL the app offers you already has the theme in it** —
-`http://127.0.0.1:8973/overlay?theme=neon`. That is deliberate: a Browser Source
-is created once and then left alone, so a bare `/overlay` would mean changing the
-theme in settings silently changed what is on stream. With the theme in the URL,
-the source says which look it is.
-
-**Changing the theme does not need the source re-added.** Every theme is already
-in the served page, so the overlay swaps its own `data-theme` attribute on the
-next poll — about two seconds, no reload, no flash. A URL with `?theme=` in it is
-pinned, though: nothing the app says afterwards will override a look the streamer
-chose explicitly.
-
-**The window** — Settings → Server → Accent colour: teal, green, pink, purple,
-amber, blue, or mono. Light and dark are a separate setting.
-
-All of it applies the moment you press Save. The accent and the overlay theme
-are pushed into the running app, and the overlay picks the change up on its next
-poll — nothing needs a restart, and a setting that changes a file but nothing
-else is worse than no setting at all.
-
-Every colour in both places is checked against the surface it sits on at 4.5:1 or
-better, in both light and dark — a test, not an opinion. That check is why the
-pastel theme's muted text is a deep mauve rather than the pale pink it started
-as, and why the dark theme's accent is lighter than the eye first reaches for.
-
-## Settings
-
-Three UIs, and two of them are not the window:
-
-| What | Where |
-| ---- | ----- |
-| **App window** | The native GPUI window. Run tab and Settings tab. |
-| **Dock page** | `http://127.0.0.1:8973/dock` — run controls only, no tabs. |
-| **Overlay** | `http://127.0.0.1:8973/overlay` — the on-stream card. |
-
-Settings live in the **Settings tab of the app window**. The dock page has no
-Settings tab; it is run controls only.
-
-The tab is schema-driven — every setting is described once in `settings.rs` — so
-adding one costs a line rather than a label, an input and a save handler that can
-drift apart. The Save button stays disabled until something actually changes, so
-opening Settings and looking at it does not rewrite the file. Engine and model
-changes take effect on the next launch, and the panel says so while a yapathon is
-running rather than letting you change a limit and watch nothing happen.
-
-Secrets are never fields. A token or API key goes in the OS credential store,
-never rendered as a value and never written to `settings.toml` — that file is the
-one thing on a streaming machine that gets synced, backed up and pasted into
-support threads.
-
-**Setting one is a button.** Next to each credential the panel shows whether it
-is set, and a **Set…** button opens a masked input with a reveal toggle. The
-dialog's own **Save** button is what commits it, to GNOME Keyring, KWallet, the
-macOS Keychain or the Windows Credential Manager, under the field's name.
-
-There is deliberately **no file fallback**. On a machine with no credential store
-the panel says so and offers no button, rather than quietly writing the key to a
-dotfile. The moment that matters is a machine whose store is missing, which is
-exactly the machine nobody is thinking about later — so it fails loudly instead.
-
-The Save button at the bottom of the panel is **not** how a credential is
-committed, and typing one does not enable it. That is structural rather than a
-promise: the credential inputs have no change subscription, so they never reach
-the model that Save serialises.
-
-### Where the settings file is
-
-Two places, checked in this order:
-
-1. **Next to the executable** — `<dir of yap-a-thon>/settings.toml`
-2. **The platform config directory** — `~/.config/yap-a-thon/settings.toml`
-
-If neither exists the app writes the current defaults to
-`~/.config/yap-a-thon/settings.toml` at startup, so there is a real file to open
-and edit from the first launch rather than one that appears after your first
-save. It never overwrites a file that is already there — including one that
-failed to parse, because the startup warning about that file is the whole reason
-it was kept.
-
-The first one that exists is the settings, in full. They are never merged: a
-value only the other file mentions comes from the defaults, so there is always
-exactly one file in effect and it is the one the Settings tab's Save button
-writes to. The panel prints the path it is using at the top.
-
-The executable directory is checked first because a settings file sitting next to
-a binary is a deliberate act — that is a portable install, where the binary and
-its configuration travel together. If you install normally and keep your settings
-in `~/.config`, the executable directory has no `settings.toml` and the second
-candidate is used, which is the ordinary case.
-
-Startup logs which path it chose and which it ignored, so "it ignored my settings
-file" is never a mystery:
-
-```
-[INFO] settings: reading /home/you/.config/yap-a-thon/settings.toml
-[INFO] settings: ignoring /opt/yap-a-thon/settings.toml while ... is in use
-```
-
-`settings.example.toml` in the repo root documents every key with its default
-and says why the debatable ones are what they are. Copy it to whichever of the
-two locations above you intend to use.
-
-One caveat worth knowing: during development the executable lives in
-`target/debug/`, so a `settings.toml` beside the release build is not the same
-directory and will not be found. `cargo run` reads `target/debug/settings.toml`;
-a built binary reads what sits beside it.
-
-### What each event is worth
-
-The **Events** section prices every kind of chat event in words. This is the
-number chat moves the goal by, so it is worth setting deliberately rather than
-leaving whatever the defaults happen to be.
-
-Prices are keyed `<platform>:<kind>`, so `twitch:cheer` means the same thing
-whether it arrived through Twitch's own EventSub or through StreamElements, and
-switching source does not re-price anything. The panel lists **twitch**,
-**youtube** and **kick**.
-
-| Setting | Default | Notes |
-| ------- | ------- | ----- |
-| New subscriber | 100 | one sub, one award |
-| Resubscribe | 100 | one resub, one award — **not** multiplied by months |
-| Gifted sub (each) | 50 | **per sub**, not per gift |
-| Cheer (per bit) | 1 | 100 bits is a dollar, so 1 keeps a cheer meaningful |
-| Raider | 250 | per raider |
-| Channel redemption | 100 | |
-| Chat `!command` | 100 | |
-| Follower, host, tip, merch | *(blank)* | |
-| YouTube subscriber | *(blank)* | only StreamElements can report this at all |
-| YouTube membership | *(blank)* | a paid member joining — not the same as subscribing |
-| YouTube Super Chat | *(blank)* | per unit spent; **no currency arrives with it** |
-| Kick follower, sub, KICKs, tip | *(blank)* | |
-
-The rows left blank are blank on purpose. They are the kinds the app can receive
-but nothing has a sensible default for, and a Super Chat priced at an invented
-rate is worse than an unpriced one you fill in deliberately. Unset them and the
-app says so once rather than letting the goal quietly fail to move.
-
-The two per-unit rows that *are* set used to be wrong, and they were wrong in a
-way only visible during a big event. Twitch sends a gift bomb as **one**
-notification carrying a quantity, and the amount was never read off the payload —
-so a hundred gifted subs extended the goal by exactly what one gifted sub did.
-A cheer had the same problem. Both now scale, and there are tests that pin it.
-
-Blanking a price means that event is worth nothing. It does not mean "leave it as
-it was" — clearing the box is how you stop an event type from being able to move
-the goal at all.
-
-### Picking a microphone
-
-The **Voice** section lists every input the machine can record from, read live
-each time the panel draws, so a USB interface plugged in mid-session shows up
-without a restart. **system default** is the first option and is stored as an
-empty value, because "whatever the OS thinks" is the right answer for almost
-everyone and should not be spelled as whichever device happens to be first.
-
-Names are stored rather than indices, because indices are assigned by
-enumeration order and a device being unplugged renumbers the rest.
-
-If the list cannot be read, the panel says so instead of showing an empty list.
-"No microphones" and "could not ask the machine" are different problems with
-different fixes, and an empty list claims the first.
-
-### Picking a model
-
-The Engine section has two ways in, and neither requires typing an absolute path:
-
-- **The list.** Every ggml model found in the searched directories, with its
-  size, largest first. Click one, then Save.
-- **`browse for a model file…`.** The desktop's own file chooser, filtered to
-  `.bin` and `.gguf`, starting in whatever directory the current model lives in.
-  This is the one to use for a model on another drive, in a downloads folder, or
-  anywhere the search does not reach.
-
-The chooser opens as its own window — on Linux it goes through the XDG desktop
-portal, which is why the app needs no GTK libraries to build. The Browse button
-greys out while it is open so you cannot stack two.
-
-If you put a model somewhere neither of those covers, the app finds it anyway: a
-configured path that does not exist is replaced with one found in
-`~/.local/share/yap-a-thon/models/` or the current directory, and the dock says
-which it picked. An existing path is never overridden, so pointing at a model on
-another drive sticks.
-
-Whichever way you choose it, the change needs a restart to take effect — the
-model is loaded once at startup, and swapping it mid-yapathon would mean the
-engine changed halfway through a count. The panel says so while a run is live.
-
-## Setup
-
-### A model
-
-The default engine is whisper.cpp running on this machine — free, offline, and the
-audio never leaves the box. Download a ggml model and put it in:
-
-```
-~/.local/share/yap-a-thon/models/
-```
-
-Then pick it in the Settings tab. Or write the path yourself:
-
-```toml
-[engine]
-model_path = "/path/to/ggml-small.en.bin"
-```
-
-| Model | Size | Notes |
-| ----- | ---- | ----- |
-| `ggml-small.en.bin` | 466 MB | English only. Runs on CPU. Proves the pipeline works. |
-| `ggml-medium.en.bin` | 1.5 GB | English only, better. Wants a GPU. |
-| `ggml-large-v3-turbo.bin` | 1.6 GB | Multilingual, best. Wants a GPU. |
-
-The `.en` models do English only; a multilingual model handles any language you
-speak. Loading a model takes a few seconds, during which the counter sits at zero
-— that is the model loading, not a fault.
-
-### Compute backend
-
-whisper.cpp selects its backend when the library is compiled, so each GPU backend
-is an opt-in build feature. A CPU build works everywhere; GPU builds are faster:
-
-```sh
-cargo build --release --features yap-voice/whisper-cuda     # NVIDIA
-cargo build --release --features yap-voice/whisper-metal    # Apple silicon
-cargo build --release --features yap-voice/whisper-vulkan   # otherwise
-```
-
-### A cloud engine, instead
-
-Optional. Groq's hosted `whisper-large-v3-turbo`, the same model, so counts stay
-comparable. VAD still runs locally, so the API receives the same complete
-utterances the local engine would and no word is counted twice at a streaming
-boundary.
-
-```toml
-[engine]
-kind = "groq"
-credential = "yap-a-thon/groq"
-```
-
-The key goes in the OS credential store, never in `settings.toml` — that file gets
-synced, backed up and pasted into support threads. About $0.04/hour of audio.
-
-Put it in with **Settings → Engine → Groq API key → Set…**. The dialog's Save
-button writes it to the keyring under the field's own name.
-
-### Twitch
-
-All three of these are needed; a partial config is treated as no config rather
-than half-working, because EventSub refuses the socket without a client id and
-silently receives nothing without a token.
-
-1. Register an application at [dev.twitch.tv/console/apps](https://dev.twitch.tv/console/apps).
-2. Get a user access token with the channel scopes.
-3. Store the token with **Settings → Twitch → Token → Set…**.
-4. Set the channel login and the application id.
-
-```toml
-twitch_channel = "your_login"
-twitch_client_id = "your_app_id"
-```
-
-Without any of this, chat commands still work and a yapathon is still playable —
-which is also the fastest way to try it.
-
-### StreamElements Astro — an alternative to talking to platforms directly
-
-A third option, **off by default**, alongside Twitch and YouTube rather than
-instead of either.
-
-[StreamElements' Astro gateway](https://docs.streamelements.com/websockets) is a
-WebSocket carrying twitch, youtube and kick on one connection, authenticated by
-a token copied from their dashboard. No OAuth, no Cloud project, no quota. It is
-a socket from this app, not a hosted overlay — nothing goes in OBS.
-
-It is genuinely good at one thing neither native API can do: it reports
-**YouTube channel subscribers**, which the Live Streaming API has no notification
-for anywhere. Native YouTube gives memberships, Super Chats and member messages;
-it cannot tell you who pressed Subscribe.
-
-Settings → Astro, one field per platform: **YouTube account** and **Twitch
-account**. Copy each JWT from the StreamElements dashboard while switched to that
-account, and leave the other empty. Each is its own keyring entry, so the panel
-says whether each is set and clearing one leaves the other alone.
-
-The label is only organisation. A token does not say which platform it covers
-and nothing checks, so a token saved in the wrong slot still works — every event
-carries its own `provider`, which is what decides how it is priced. The log
-names the platform that actually arrived, so a mistake is visible rather than
-silent.
-
-Prices are shared with the native path: Astro names events `<platform>:<kind>`
-the same way EventSub does, so `twitch:cheer` means the same thing either way
-and switching does not silently re-price everything to nothing.
-
-Two things it does not do, deliberately:
-
-- **No simulated events.** StreamElements' widget simulator marks its test
-  activity `isMock: true`, and counting it would let a cheer nobody sent move the
-  goal.
-- **No duplicate counting.** Activities are deduplicated by `activityId`, so a
-  reconnect cannot count one cheer twice.
-
-**Astro and native Twitch cannot both count Twitch.** Both report
-`twitch:cheer` with the same bits into the same sink, so a streamer who left both
-configured would watch the goal climb at double speed with nothing wrong on
-screen. Where a platform is covered by both, native wins and Astro says so in the
-log and as a warning in the window — clear the native Twitch settings to hand
-that platform to Astro instead. Astro is still worth adding for the platforms
-native cannot cover.
-
-### Testing it without viewers
-
-```sh
-YAP_ALLOW_MOCK_EVENTS=1 cargo run --release
-```
-
-StreamElements' widget simulator produces test events. Counting those would let a
-cheer nobody sent move the goal, so they are normally dropped — this counts them
-anyway, for checking the whole chain end to end without waiting for a raid.
-
-Anything it accepts is labelled `(mock)` in the event feed, so it can never be
-mistaken for something a viewer did. It is an environment variable rather than a
-setting because `settings.toml` is exactly the file that gets synced to a
-streaming machine and pasted into support threads, and it warns at launch.
-
-**Unset it before streaming.**
-
-The payloads were measured against the widget simulator; the connection and the
-full chain — payload to priced event to a goal that moves — have been verified
-against it. See [`tools/astro-probe`](tools/astro-probe/README.md).
-
-### Chat commands
-
-Work with no credentials at all:
-
-```
-!yap                 status
-!yap start 5000      begin a yapathon
-!yap extend 500      add 500 words to the goal
-!yap +500            same, the form chat actually types
-!yap set 7500        move the goal to an absolute value
-!yap pause           stop counting without ending the run
-!yap resume
-!yap undo            void the last utterance
-!yap end
-```
-
-## When the count is wrong
-
-Two levels, and it matters which one you reach for.
-
-**Undo last** voids the most recent utterance in the log. It is the right answer
-for "that was misheard" — one click, and the transcript shows the line struck
-through rather than silently disappearing.
-
-**Manual correction** is for everything else, and it has three shapes:
-
-- **Preset buttons** — `+10 +25 +50 +100 −100`. Most corrections are round
-  numbers, and there is a `−` as well as a `+` on purpose: a panel where every
-  available correction goes up is a panel where a mistake can only be made
-  worse.
-- **A signed amount and a note.** Anything the presets do not cover, with the
-  reason kept in the log.
-- **Set the count to exactly this.** The case the other two cannot serve: a gift
-  bomb extended the goal by an amount nobody agreed on and you know what it
-  should have been. Type the number it should be and the difference is applied as
-  a correction, with a note saying what it did.
-
-All three go through the same audit log. Nothing is deleted, so "how did we get
-here" always has an answer.
-
-## Counting rules
-
-Everyone will argue about these, so each is an independent switch. Three have a
-defensible default:
-
-- **Contractions expand.** "don't" is said as two words.
-- **Numerals spell out.** The recogniser emits `42`; the streamer said "forty
-  two", which is two words. Counting the digit as one makes number-heavy speech
-  score far below how it sounds.
-- **Repetitions count.** "no no no" is three words and the streamer meant all
-  three.
-
-Fillers are tallied separately and subtracted only if asked. Excluding them is a
-variant mode rather than the honest default.
-
-## The audit log
-
-Every utterance's text and timestamps are kept, and a correction voids an entry
-rather than deleting it. A yapathon is a public claim about how many words
-someone said, and chat will check it. `Undo last` and a manual adjustment both
-exist for the same reason: when the counter is wrong, the answer is a button, not
-an argument.
-
-## Status
-
-Working: counting, all three goal modes and the hard limit, the audit log, undo
-and the three correction shapes, chat commands, per-event pricing across twitch,
-youtube and kick, the live microphone picker, the model file chooser,
-click-to-copy overlay URL, the local API, the dock, the overlay, the settings
-panel, the in-app credential prompt, and StreamElements Astro.
-
-Verified end to end: a yapathon counted live speech while its goal was extended
-by chat from both platforms at once, with per-bit cheers and per-unit Super Chats
-scaling correctly.
-
-Not yet: no event has come from a real viewer rather than the simulator; there is
-no model download or first-run wizard; session history is not persisted between
-runs; native YouTube is not built, though Astro covers the ground
-([`docs/youtube.md`](docs/youtube.md)).
-
-Verified by test rather than by eye:
-
-- Every text colour clears WCAG AA (4.5:1) against every surface it is used on,
-  in **both** themes. This is checked against the real palette in a real window,
-  not against a table of literals — the OBS URL sat at about 1.5:1 until that
-  check existed.
-- Every exclusive-choice control — tabs, run modes, settings sections, choice
-  fields, microphones — is clickable, tested by dispatching a real click at every
-  option from every starting state. All four of those rows were once built with
-  `disabled(!selected)`, which removes the click handler, so only the
-  already-selected option responded and the entire settings panel was decorative.
-- A counted session repaints the window. The session entity used to fold new
-  snapshots into its model without notifying, so the count advanced in memory
-  through an entire yapathon while the number on screen stayed at zero.
-
-Not verified: word counting against real speech has been confirmed once — words
-appeared and words-per-minute followed when someone talked — but accuracy has not
-been measured properly. Every rule in `yap-core` is tested against text, and the
-segmenter's boundaries are tested against synthetic audio, so what is unmeasured
-is the chain's behaviour on a real room and a real model.
-
-**The overlay has still not been seen rendering inside OBS**, though it turned
-out to be OBS's own "disable hardware acceleration for browser sources" setting
-rather than anything in the page. The `backdrop-filter` removal stands on its own
-— it is a real CEF hazard either way.
-
-**The credential dialog has not been clicked through.** Its store round trip, its
-masking, its empty-value refusal and the fact that typing into it does not arm
-Save are all tested, and the panel renders it. But opening the dialog itself is
-not covered headlessly — GPUI's test window has no component root, and building
-one needs an `&mut App` that the test context does not hand out. So "click Set,
-a dialog appears, paste a token, click Save, it says stored" is the one step
-that wants a human.
-
-Two bugs in this list were only findable by running it, and both had the same
-shape — no error anywhere, just a symptom that looked like something else:
-
-- The server and the window each built their own `AppState`, so they were two
-  separate sessions. Starting a yapathon in one did nothing to the other.
-- The listener called `stop()` on itself immediately after opening, with a
-  comment saying it was holding it for the process lifetime.
-
-Both are fixed and covered by tests. They are recorded here because "nothing
-errored" is the hardest class of bug to chase, and the next one will probably
-look like a rendering problem too.
+**2. Download a speech model.** The app needs one, and does not fetch it for you
+— a 500 MB download on first launch is a decision, not a surprise.
+
+Models live in the
+[whisper.cpp repository on Hugging Face](https://huggingface.co/ggerganov/whisper.cpp/tree/main).
+Grab `ggml-small.en.bin` as a starting point; `ggml-base.en.bin` is faster and
+`ggml-medium.en.bin` is more accurate if you have a GPU. If you are not broke and
+your GPU starts with a 5, go straight to `ggml-large-v3-turbo.bin` — see
+[Setup](docs/setup.md#compute-backend).
+
+This is a **local** model. It runs on your own machine, nothing you say is
+uploaded anywhere, and it works with your connection off. The `.en` models are
+English-only; the larger non-`.en` files handle other languages and cost more to
+run.
+
+Put it wherever you like, then point the app at it in **Settings → Engine →
+Model file**. It will also look in `~/.local/share/yap-a-thon/models/` and
+`%APPDATA%\yap-a-thon\models\` without being told to.
+
+**3. Talk.** Press **Start**. Words appear.
+
+That is a working yapathon with no chat integration. Everything below is about
+letting chat move the goal too.
+
+## Chat, if you want it
+
+**Twitch** — register an application at
+[dev.twitch.tv/console/apps](https://dev.twitch.tv/console/apps), set your
+channel and application id in **Settings → Twitch**, and put a user token with
+the channel scopes in **Settings → Twitch → User token**.
+
+**YouTube, and Twitch and YouTube at once** — the easier path, through
+[StreamElements](https://streamelements.com). No OAuth project, no quota, and it
+reports one event the YouTube API cannot report at all.
+
+1. Sign in at **streamelements.com**.
+2. **Click the avatar in the top-right corner**, then your channel name, then
+   the correct account. Copy the JWT token.
+3. In the app, go to **Settings → Astro → YouTube account → Set…**, and paste it.
+4. **Click the avatar again** and switch to your *other* account.
+5. Copy that token too, into **Twitch account**.
+
+The tokens are per account — each only ever sees its own platform, and copying
+the wrong one connects to the other account's room. If it is not working, the
+app log says which platform each connection is actually receiving.
+
+Then price your events in **Settings → Events**. Nothing is priced until you
+price it, and the app tells you when an event arrives that you have not priced.
+
+## Documentation
+
+| | |
+| --- | --- |
+| [Running](docs/running.md) | building it, the URLs, where settings live |
+| [Counting](docs/counting.md) | how words are counted, fillers, contractions, the audit log |
+| [Goal modes](docs/modes.md) | extend, fixed and clock modes, and what chat can do to each |
+| [Setup](docs/setup.md) | models, compute backends, cloud engines |
+| [Twitch](docs/twitch.md) | EventSub, tokens, what it counts |
+| [StreamElements Astro](docs/astro.md) | the third platform, and the probe used to measure it |
+| [YouTube](docs/youtube.md) | why it works this way, and the quota that shapes it |
+| [Overlay](docs/overlay.md) | themes, OBS setup, and the things CEF renders badly |
+| [Settings](docs/settings.md) | every section, and the events you can price |
+| [Troubleshooting](docs/troubleshooting.md) | when the count is wrong, or nothing happens |
+
+## What it does not do
+
+No events have come from a real viewer yet — everything verified so far used
+StreamElements' own simulator, and the app labels those `(mock)` so they cannot
+be mistaken for the real thing. Super Chat amounts arrive without a currency, so
+a price is per unit rather than per dollar. `!yap` in chat works through the
+local API but not yet through StreamElements.
+
+See [Status](docs/troubleshooting.md#status) for the rest.
