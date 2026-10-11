@@ -195,6 +195,40 @@ fn a_merch_basket_is_worth_what_it_actually_cost() {
 }
 
 #[test]
+fn a_merch_basket_whose_amount_is_zero_is_still_worth_something() {
+    // A second captured basket, and the sharper version of the bug: here
+    // `amount` is **0**, so reading it would value a 34.97 purchase at nothing
+    // at all — not at a slightly wrong number, but at zero. The price is only
+    // ever in `items`, and a streamer selling merch would watch it happen.
+    let frame = r#"{
+      "type":"message","topic":"channel.activities","conn":"twitch",
+      "data":{"type":"merch","provider":"twitch","isMock":true,
+        "data":{"username":"fuzzyraven128","displayName":"FuzzyRaven128",
+          "amount":0,
+          "items":[{"name":"T-Shirt","price":9.99,"quantity":1},
+                   {"name":"Hoodie","price":19.99,"quantity":1},
+                   {"name":"Mug","price":4.99,"quantity":1}]}}
+    }"#;
+
+    let parsed: Frame = serde_json::from_str(frame).unwrap();
+    let activity = parsed.data.as_ref().and_then(FrameData::activity).unwrap();
+
+    assert_eq!(
+        activity.data.amount,
+        Some(0.0),
+        "the field that is not the price"
+    );
+
+    let (kind, amount) = shape(&activity).expect("shaped");
+    assert_eq!(kind, "merch");
+    assert_eq!(
+        amount,
+        Some(34.97),
+        "a 34.97 basket is worth 34.97, and worth nothing if amount is trusted",
+    );
+}
+
+#[test]
 fn a_simulated_event_is_never_counted() {
     // Every payload captured with the probe carried `isMock: true` — the widget
     // editor's test button. If these were counted, a yapathon could be extended

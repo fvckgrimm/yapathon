@@ -119,6 +119,33 @@ own platform. Run it, switch the active account on StreamElements, simulate, and
 confirm the other connection keeps its subscription alive throughout — that is
 the property testing one account at a time cannot show.
 
+## Both accounts at once, confirmed (2026-10-11)
+
+```
+2 account(s): twitch, youtube
+[youtube] ✓ subscribed  room=6acac21e4f4bb2e1b6a85f76
+[twitch]  ✓ subscribed  room=5e7439a029f72805e1d577fb
+...
+1  twitch   5e7439a0…  twitch(13)   13
+2  youtube  6acac21e…  youtube(10)  4
+  Every platform is delivered by exactly one connection.
+```
+
+Each token resolves its own room and each connection delivers only its own
+platform. Switching the active account on StreamElements mid-run does not
+disturb the other connection, which is the property testing one account at a
+time cannot show.
+
+Three kinds turned up that had not been seen before:
+
+- **`twitch/superchat`** — a simulator artefact. Twitch has no Super Chats, so
+  this will never arrive from the real platform. Harmless: it falls through to
+  the generic arm and is priced as `twitch:superchat`, which nobody configures.
+- **`twitch/merch`** — with `amount: 0` and the money only in `items`. The
+  sharper version of the basket bug: trusting `amount` values a 34.97 purchase
+  at **nothing**, not at a slightly wrong number.
+- **`twitch/redemption`** — channel points, no size, correctly flat.
+
 ## What the probe found (2026-10-10)
 
 Answer: **yes, the amounts are there.** On `channel.activities`, nested one level
