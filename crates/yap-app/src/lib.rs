@@ -24,6 +24,7 @@
 
 pub mod app;
 pub mod hub;
+pub mod icons;
 pub mod model;
 pub mod runtime;
 pub mod segment;

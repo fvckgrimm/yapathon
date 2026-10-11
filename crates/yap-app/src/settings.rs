@@ -8,6 +8,8 @@
 //! in [`crate::settings_view::SettingsModel`], which is what lets the panel hold
 //! unsaved edits without touching the file.
 
+use gpui_kit::assets::IconName;
+
 /// What kind of control a setting needs.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FieldKind {
@@ -82,6 +84,17 @@ pub struct Field {
 #[derive(Debug, Clone, Copy)]
 pub struct Section {
     pub title: &'static str,
+    /// The section's symbol.
+    ///
+    /// Eleven sections in a wrapping row of small buttons is a wall of text
+    /// that has to be read rather than recognised, and the icons are what make
+    /// it scannable — the goal one and the counting one are otherwise the same
+    /// two words long.
+    ///
+    /// A name rather than an image, resolved through [`crate::icons::Assets`].
+    /// Nothing about naming an icon guarantees its bytes exist, so the list in
+    /// `icons.rs` has a test that checks every icon named here is served.
+    pub icon: IconName,
     pub fields: &'static [Field],
 }
 
@@ -390,46 +403,57 @@ const EVENTS_CHAT: &[Field] = &[event_field(
 pub const SETTINGS_SECTIONS: &[Section] = &[
     Section {
         title: "Engine",
+        icon: IconName::Cpu,
         fields: ENGINE,
     },
     Section {
         title: "Events · Twitch",
+        icon: IconName::Heart,
         fields: EVENTS_TWITCH,
     },
     Section {
         title: "Events · YouTube",
+        icon: IconName::Play,
         fields: EVENTS_YOUTUBE,
     },
     Section {
         title: "Events · Kick",
+        icon: IconName::Rocket,
         fields: EVENTS_KICK,
     },
     Section {
         title: "Events · Chat",
+        icon: IconName::MessagesSquare,
         fields: EVENTS_CHAT,
     },
     Section {
         title: "Goal",
+        icon: IconName::Target,
         fields: GOAL,
     },
     Section {
         title: "Counting",
+        icon: IconName::Sigma,
         fields: COUNTING,
     },
     Section {
         title: "Voice",
+        icon: IconName::Mic,
         fields: VOICE,
     },
     Section {
         title: "Astro",
+        icon: IconName::Orbit,
         fields: ASTRO,
     },
     Section {
         title: "Twitch",
+        icon: IconName::Radio,
         fields: TWITCH,
     },
     Section {
         title: "Server",
+        icon: IconName::Server,
         fields: SERVER,
     },
 ];
@@ -532,7 +556,46 @@ pub fn credential_entry(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::collections::HashSet;
+    use gpui::AssetSource;
+    use std::collections::{HashMap, HashSet};
+
+    #[test]
+    fn every_section_icon_is_served_and_no_two_sections_share_one() {
+        // Two properties of the icons, checked together because they fail the
+        // same way: a settings section whose icon never draws looks exactly like
+        // one that does, until someone notices a gap where a symbol should be.
+        //
+        // *Served* because `IconName` is a name and nothing about it says the
+        // bytes exist — that half is the gap `crate::icons` documents.
+        //
+        // *Distinct* because an icon repeated across sections spends the one
+        // thing it was added for. Events · Twitch and Twitch are already close
+        // enough in words; giving them the same glyph would make them harder to
+        // tell apart, not easier.
+        let mut seen: HashMap<IconName, &'static str> = HashMap::new();
+
+        for section in SETTINGS_SECTIONS {
+            let path = section.icon.path();
+
+            assert!(
+                crate::icons::Assets
+                    .load(&path)
+                    .unwrap_or_else(|error| panic!("{}: {error:#}", section.title))
+                    .is_some(),
+                "{}: {:?} is named but not served — add it to the icon_assets! \
+                 list in icons.rs",
+                section.title,
+                section.icon,
+            );
+
+            if let Some(previous) = seen.insert(section.icon, section.title) {
+                panic!(
+                    "{} and {previous} share {:?}, which spends the icon on both",
+                    section.title, section.icon,
+                );
+            }
+        }
+    }
 
     #[test]
     fn every_key_is_unique() {

@@ -6,6 +6,7 @@
 
 use std::rc::Rc;
 
+use gpui_kit::assets::IconName;
 use gpui_kit::component::Selectable as _;
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::prelude::FluentBuilder as _;
@@ -43,6 +44,25 @@ pub fn segment_button(
         .when(selected, |button| button.primary())
         .selected(selected)
         .on_click(move |_, window, cx| on_click(window, cx))
+}
+
+/// One option in an exclusive row, with a symbol in front of its label.
+///
+/// The same button as [`segment_button`], so the selected variant and the click
+/// handler are chosen the same way and cannot drift apart.
+///
+/// Separate rather than a parameter on `segment_button` because a row of
+/// mixed icon-and-text segments is worse than either: a symbol means the
+/// section is recognisable, and a row where some options have one and some do
+/// not makes you read the text to work out which convention you are in.
+pub fn icon_segment_button(
+    id: impl Into<gpui::ElementId>,
+    icon: IconName,
+    label: impl Into<SharedString>,
+    selected: bool,
+    on_click: impl Fn(&mut gpui::Window, &mut App) + 'static,
+) -> Button {
+    segment_button(id, label, selected, on_click).icon(icon)
 }
 
 /// A row of mutually exclusive options, one of which is current.
@@ -84,10 +104,14 @@ mod tests {
     use std::cell::Cell;
     use std::rc::Rc;
 
+    use gpui_kit::assets::IconName;
     use gpui_kit::test::TestWindowExt as _;
-    use gpui_kit::{IntoElement, Render, SharedString};
+    use gpui_kit::{
+        App, InteractiveElement as _, IntoElement, ParentElement as _, Render, SharedString,
+        Styled as _, Window, div, px,
+    };
 
-    use super::segmented;
+    use super::{icon_segment_button, segment_button, segmented};
 
     /// One option, for a row of tests to pick between.
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -214,5 +238,115 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// One button, built with or without an icon.
+    struct OneButton {
+        icon: Option<IconName>,
+        clicked: Rc<Cell<bool>>,
+    }
+
+    impl Render for OneButton {
+        fn render(
+            &mut self,
+            _window: &mut Window,
+            _cx: &mut gpui::Context<Self>,
+        ) -> impl IntoElement {
+            let clicked = Rc::clone(&self.clicked);
+
+            // Measured through `debug_selector` on a fixed-width wrapper rather
+            // than through the id the button was built with.
+            //
+            // That id is not an observable boundary: looking it up finds the
+            // maximized test window's root, which is the same width for both
+            // cases, so the comparison would pass on two equal numbers while
+            // saying nothing about icons. This wrapper is a known 400px, so its
+            // bounds vary only with what the button put inside it.
+            div()
+                .w(px(400.0))
+                .flex()
+                .flex_col()
+                .items_start()
+                .child(
+                    div()
+                        .debug_selector(|| "probe".into())
+                        .child(match self.icon {
+                            Some(icon) => {
+                                icon_segment_button("button", icon, "Goal", false, move |_, _| {
+                                    clicked.set(true)
+                                })
+                                .into_any_element()
+                            }
+                            None => segment_button("button", "Goal", false, move |_, _| {
+                                clicked.set(true)
+                            })
+                            .into_any_element(),
+                        }),
+                )
+                .into_any_element()
+        }
+    }
+
+    /// Draw one button, then report its rendered width and whether it was clicked.
+    ///
+    /// Measured rather than assumed. `Icon::path` names a file; whether those
+    /// bytes ever reach layout is a separate question, and an icon that fails to
+    /// load takes up no space at all — so the width is the observation. A button
+    /// that compiles, resolves a name, and draws nothing is indistinguishable
+    /// from one without the icon by any other means.
+    fn probe(icon: Option<IconName>, cx: &mut gpui_kit::TestAppContext) -> (f32, Rc<Cell<bool>>) {
+        // Cloned before the move: one handle goes into the view, one stays
+        // here to be read after the click.
+        let clicked: Rc<Cell<bool>> = Rc::new(Cell::new(false));
+        let in_view = Rc::clone(&clicked);
+
+        cx.update(gpui_kit::init);
+        let (_, cx) = cx.add_window_view(move |_window, _cx| OneButton {
+            icon,
+            clicked: in_view,
+        });
+
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+
+        let width = cx
+            .debug_bounds("probe")
+            .expect("the probe div rendered")
+            .size
+            .width
+            .as_f32();
+
+        cx.update(|window, cx| window.click(SharedString::from("button"), cx));
+
+        (width, clicked)
+    }
+
+    #[gpui_kit::test]
+    fn an_icon_actually_takes_up_room_on_the_button(cx: &mut gpui_kit::TestAppContext) {
+        // The failure this catches: the icon is named, the name compiles, the
+        // bytes are missing, and the button renders exactly as it would without
+        // one — eleven settings sections looking identical to before the icons
+        // were added, with nothing anywhere saying so.
+        //
+        // Width is the tell. A glyph occupies space whether or not anyone
+        // checked that it loaded, and an empty one occupies none.
+        let (plain, plain_clicked) = probe(None, cx);
+        let (with_icon, icon_clicked) = probe(Some(IconName::Target), cx);
+
+        assert!(
+            with_icon - plain > 8.0,
+            "the icon adds only {:.1}px to a {plain:.1}px button, which is not a \
+             glyph — it is not being drawn",
+            with_icon - plain,
+        );
+
+        // The click half is here rather than in a test of its own because it is
+        // the same risk: the obvious way to make room for an icon is to stop the
+        // button working, and `Button::disabled` does exactly that while looking
+        // like the right thing to press.
+        assert!(plain_clicked.get(), "the plain button stopped responding");
+        assert!(
+            icon_clicked.get(),
+            "an icon on the button must not take its click handler with it"
+        );
     }
 }

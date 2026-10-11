@@ -115,7 +115,9 @@ fn main() -> anyhow::Result<()> {
     // `run` consumes the thread and does not return a result: a failure to open
     // the platform is reported through the closure, which prints and exits.
     gpui_kit::application()
-        .with_assets(gpui_kit::assets::Assets)
+        // The app's own icons layered over the kit's defaults. See `icons.rs`
+        // for why this is not simply `gpui_kit::assets::Assets`.
+        .with_assets(yap_app::icons::Assets)
         .run(move |cx| {
             gpui_kit::init(cx);
 

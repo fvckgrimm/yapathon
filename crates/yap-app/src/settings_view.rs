@@ -24,7 +24,7 @@ use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::switch::Switch;
 
 use crate::model::SessionEntity;
-use crate::segment::segment_button;
+use crate::segment::{icon_segment_button, segment_button};
 use yap_core::goal::GoalMode;
 
 use crate::settings::{Field, FieldKind, SETTINGS_SECTIONS, is_textual};
@@ -489,10 +489,12 @@ impl SettingsView {
                 .map(|(index, section)| {
                     let selected = index == self.settings.section;
                     let label = section.title;
+                    let icon = section.icon;
                     let me = me.clone();
 
-                    segment_button(
+                    icon_segment_button(
                         SharedId::section(index),
+                        icon,
                         label,
                         selected,
                         move |_window, cx| {
