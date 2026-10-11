@@ -190,39 +190,39 @@ const YAPATHON: &[Field] = &[
 
 const CHAT_SETUP: &[Field] = &[
     Field {
+        key: "astro_youtube_token",
+        label: "YouTube (via StreamElements)",
+        kind: FieldKind::Secret,
+        options: &[],
+        help: Some("Token from StreamElements. Empty = YouTube off"),
+    },
+    Field {
+        key: "astro_twitch_token",
+        label: "Twitch (via StreamElements)",
+        kind: FieldKind::Secret,
+        options: &[],
+        help: Some("The easy path — no dev-console app needed. Empty = off"),
+    },
+    Field {
         key: "twitch_channel",
-        label: "Your Twitch channel",
+        label: "Your Twitch channel (direct)",
         kind: FieldKind::Text,
         options: &[],
-        help: Some("Empty = chat can't grow the goal yet, talking still counts"),
+        help: Some("Needs the app ID + login below. Empty = direct Twitch off"),
     },
     Field {
         key: "twitch_client_id",
-        label: "Twitch app ID",
+        label: "Twitch app ID (direct)",
         kind: FieldKind::Text,
         options: &[],
         help: Some("From dev.twitch.tv/console/apps — one-time copy-paste"),
     },
     Field {
         key: "twitch_token",
-        label: "Twitch login",
+        label: "Twitch login (direct)",
         kind: FieldKind::Secret,
         options: &[],
-        help: None,
-    },
-    Field {
-        key: "astro_youtube_token",
-        label: "YouTube connection",
-        kind: FieldKind::Secret,
-        options: &[],
-        help: Some("Via StreamElements. Empty = YouTube off"),
-    },
-    Field {
-        key: "astro_twitch_token",
-        label: "Twitch via StreamElements",
-        kind: FieldKind::Secret,
-        options: &[],
-        help: Some("Only needed if you stream to both sites at once"),
+        help: Some("Only needed for the direct connection above"),
     },
 ];
 

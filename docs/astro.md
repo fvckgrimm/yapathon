@@ -13,10 +13,12 @@ It is genuinely good at one thing neither native API can do: it reports
 for anywhere. Native YouTube gives memberships, Super Chats and member messages;
 it cannot tell you who pressed Subscribe.
 
-Settings → Chat setup, one field per platform: **YouTube connection** and **Twitch
-via StreamElements**. Copy each JWT from the StreamElements dashboard while switched to that
+Settings → Chat setup, StreamElements first: **YouTube (via StreamElements)** and
+**Twitch (via StreamElements)**. Copy each JWT from the StreamElements dashboard while switched to that
 account, and leave the other empty. Each is its own keyring entry, so the panel
-says whether each is set and clearing one leaves the other alone.
+says whether each is set and clearing one leaves the other alone. The direct
+Twitch fields below are the alternative for anyone who would rather register
+their own Twitch app than go through a third party.
 
 The label is only organisation. A token does not say which platform it covers
 and nothing checks, so a token saved in the wrong slot still works — every event
