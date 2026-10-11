@@ -6,7 +6,7 @@ silently receives nothing without a token.
 
 1. Register an application at [dev.twitch.tv/console/apps](https://dev.twitch.tv/console/apps).
 2. Get a user access token with the channel scopes.
-3. Store the token with **Settings → Twitch → Token → Set…**.
+3. Store the token with **Settings → Chat setup → Twitch login → Set…**.
 4. Set the channel login and the application id.
 
 ```toml

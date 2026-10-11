@@ -64,5 +64,5 @@ credential = "yap-a-thon/groq"
 The key goes in the OS credential store, never in `settings.toml` — that file gets
 synced, backed up and pasted into support threads. About $0.04/hour of audio.
 
-Put it in with **Settings → Engine → Groq API key → Set…**. The dialog's Save
+Put it in with **Settings → Voice → Groq key → Set…**. The dialog's Save
 button writes it to the keyring under the field's own name.

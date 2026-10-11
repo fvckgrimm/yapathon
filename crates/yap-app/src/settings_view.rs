@@ -15,8 +15,8 @@ use std::path::Path;
 
 use gpui::prelude::FluentBuilder as _;
 use gpui::{
-    App, AppContext as _, Context, Entity, IntoElement, ParentElement as _, Styled as _, Task,
-    Window, div, px,
+    App, AppContext as _, Context, Entity, Hsla, IntoElement, ParentElement as _, Styled as _,
+    Task, Window, div, px,
 };
 use gpui_kit::Subscription;
 use gpui_kit::component::Disableable as _;
@@ -321,6 +321,12 @@ pub struct SettingsView {
     /// reading a file the streamer never edits, which is a panel that appears to
     /// work and does not.
     path: std::path::PathBuf,
+    /// Whether the Advanced section is visible.
+    ///
+    /// Advanced holds network ports and token slots nobody should need. Showing
+    /// it next to everything else is how a settings screen becomes something
+    /// nobody reads, so it sits behind a disclosure.
+    advanced_open: bool,
     /// Whether a file chooser is open right now.
     ///
     /// Not decoration: the chooser opens as a separate window owned by the
@@ -499,6 +505,7 @@ impl SettingsView {
                 secret_entries,
                 subscribed_keys: subscribed,
                 path,
+                advanced_open: false,
                 browsing: false,
                 browse_task: None,
                 _subscriptions: subscriptions,
@@ -529,29 +536,60 @@ impl SettingsView {
     }
 
     fn render_sections(&self, me: &gpui::WeakEntity<Self>, _cx: &mut App) -> impl IntoElement {
-        div().flex().flex_wrap().gap_2().children(
-            SETTINGS_SECTIONS
-                .iter()
-                .enumerate()
-                .map(|(index, section)| {
-                    let selected = index == self.settings.section;
-                    let label = section.title;
-                    let icon = section.icon;
-                    let me = me.clone();
+        let advanced = advanced_section();
+        let show_advanced = self.advanced_open;
 
-                    icon_segment_button(
-                        SharedId::section(index),
-                        icon,
-                        label,
-                        selected,
-                        move |_window, cx| {
-                            let _ = me.update(cx, |this, _cx| {
-                                this.settings.section = index;
+        div().flex().flex_col().gap_2().child(
+            div().flex().flex_wrap().gap_2().children(
+                SETTINGS_SECTIONS
+                    .iter()
+                    .enumerate()
+                    // Advanced sits behind the disclosure below, not in the row.
+                    .filter(|(index, _)| Some(*index) != advanced || show_advanced)
+                    .map(|(index, section)| {
+                        let selected = index == self.settings.section;
+                        let label = section.title;
+                        let icon = section.icon;
+                        let me = me.clone();
+
+                        icon_segment_button(
+                            SharedId::section(index),
+                            icon,
+                            label,
+                            selected,
+                            move |_window, cx| {
+                                let _ = me.update(cx, |this, _cx| {
+                                    this.settings.section = index;
+                                    this.settings.notice = None;
+                                });
+                            },
+                        )
+                        .into_any_element()
+                    }),
+            ),
+        ).child(
+            Button::new("show-advanced")
+                .label(if show_advanced {
+                    "Hide advanced"
+                } else {
+                    "Show advanced…"
+                })
+                .on_click({
+                    let me = me.clone();
+                    move |_, _, cx| {
+                        let _ = me.update(cx, |this, _cx| {
+                            this.advanced_open = !this.advanced_open;
+                            // Closing while looking at Advanced would strand the
+                            // panel on a section with no button — fall back to
+                            // the first one instead.
+                            if !this.advanced_open
+                                && Some(this.settings.section) == advanced
+                            {
+                                this.settings.section = 0;
                                 this.settings.notice = None;
-                            });
-                        },
-                    )
-                    .into_any_element()
+                            }
+                        });
+                    }
                 }),
         )
     }
@@ -879,11 +917,16 @@ impl SettingsView {
     }
 
     /// A field with a fixed set of values.
+    ///
+    /// Plain labels where the stored value is jargon (`extend` means nothing to
+    /// a streamer), a colour dot where the value *is* a colour, and the
+    /// one-line note where the server already writes one down (overlay looks).
+    /// The stored value never changes — only what the button says.
     fn render_choice_field(
         &self,
         field: &Field,
         me: &gpui::WeakEntity<Self>,
-        _cx: &mut App,
+        cx: &mut App,
     ) -> impl IntoElement {
         let key = field.key;
         let current = self.settings.get(key).to_string();
@@ -891,21 +934,68 @@ impl SettingsView {
 
         div()
             .flex()
-            .gap_1()
+            .gap_2()
             .flex_wrap()
             .children(options.into_iter().map(|option| {
                 let selected = option == current;
                 let me = me.clone();
+                let label = choice_label(key, &option);
+                let note = choice_note(key, &option);
 
-                segment_button(
+                // A colour dot in front, so picking "pink" does not require
+                // imagining it. The dot follows the app theme like the count
+                // does, from the same preset table. Computed before the button
+                // below moves `option` into its click handler.
+                let dot_colour: Option<Hsla> = (key == "accent").then(|| {
+                    let preset = crate::theme::Accent::from_id(&option);
+                    if Theme::is_dark(cx) {
+                        preset.on_dark()
+                    } else {
+                        preset.on_light()
+                    }
+                });
+
+                let button = segment_button(
                     SharedId::choice(key, &option),
-                    option.clone(),
+                    label,
                     selected,
                     move |_window, cx| {
                         let _ = me.update(cx, |this, _cx| this.settings.set(key, option.clone()));
                     },
                 )
-                .into_any_element()
+                .into_any_element();
+
+                let dot: Option<gpui::AnyElement> = dot_colour.map(|colour| {
+                    div()
+                        .size(px(12.0))
+                        .flex_shrink_0()
+                        .rounded_full()
+                        .bg(colour)
+                        .into_any_element()
+                });
+
+                match (dot, note) {
+                    (Some(dot), _) => div()
+                        .flex()
+                        .items_center()
+                        .gap_1()
+                        .child(dot)
+                        .child(button)
+                        .into_any_element(),
+                    (None, Some(note)) => div()
+                        .flex()
+                        .flex_col()
+                        .gap_1()
+                        .child(button)
+                        .child(
+                            div()
+                                .text_size(LABEL)
+                                .text_color(Theme::muted(cx))
+                                .child(note.to_string()),
+                        )
+                        .into_any_element(),
+                    (None, None) => button,
+                }
             }))
     }
 
@@ -1044,6 +1134,11 @@ impl SettingsView {
     /// Whether a file chooser is open.
     pub fn is_browsing(&self) -> bool {
         self.browsing
+    }
+
+    /// Whether the Advanced disclosure is open.
+    pub fn is_advanced_open(&self) -> bool {
+        self.advanced_open
     }
 
     /// Whether the panel has unsaved edits, so Save would do something.
@@ -1715,6 +1810,39 @@ impl gpui::Render for SettingsView {
     }
 }
 
+/// What a choice button says, when the stored value is jargon.
+///
+/// The value written on Save never changes — only the label. A stored value
+/// with no arm here shows verbatim, so adding a choice cannot silently blank
+/// its button.
+fn choice_label(key: &str, option: &str) -> String {
+    match (key, option) {
+        ("default_mode", "extend") => "Chat grows the goal".to_string(),
+        ("default_mode", "fixed") => "Fixed goal".to_string(),
+        ("default_mode", "time") => "Timed run".to_string(),
+        ("accent", id) => crate::theme::Accent::from_id(id).label().to_string(),
+        _ => option.to_string(),
+    }
+}
+
+/// The one-line note under a choice, where the server already writes one down.
+///
+/// Overlay palettes and styles carry their own `label`/`note` in `yap-server`,
+/// which is what the settings panel reads — one table, not two that drift.
+fn choice_note(key: &str, option: &str) -> Option<&'static str> {
+    match key {
+        "overlay_theme" => yap_server::overlay::OVERLAY_PALETTES
+            .iter()
+            .find(|palette| palette.id == option)
+            .map(|palette| palette.note),
+        "overlay_style" => yap_server::overlay::OVERLAY_STYLES
+            .iter()
+            .find(|style| style.id == option)
+            .map(|style| style.note),
+        _ => None,
+    }
+}
+
 /// The microphones this machine can record from.
 ///
 /// Read fresh each time the panel draws: a USB interface can be plugged in
@@ -1738,6 +1866,16 @@ fn engine_section() -> usize {
         .unwrap_or(0)
 }
 
+/// The index of the Advanced section, if one exists.
+///
+/// Found by title like [`engine_section`], for the same reason: a constant
+/// would silently point at the wrong section the moment one is inserted.
+fn advanced_section() -> Option<usize> {
+    SETTINGS_SECTIONS
+        .iter()
+        .position(|section| section.title == "Advanced")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1745,8 +1883,34 @@ mod tests {
     use yap_core::settings::{Settings, default_model_path};
 
     #[test]
-    fn a_saved_accent_takes_effect_without_a_restart() {
-        // Pressing Save updated the file and nothing else: the window stayed the
+    fn choice_buttons_say_what_they_mean_but_store_what_they_always_stored() {
+        // The stored values are jargon (`extend`) and must stay exactly that —
+        // only the label changes. An option with no friendly name shows
+        // verbatim, so a new choice cannot silently blank its button.
+        assert_eq!(choice_label("default_mode", "extend"), "Chat grows the goal");
+        assert_eq!(choice_label("default_mode", "fixed"), "Fixed goal");
+        assert_eq!(choice_label("default_mode", "time"), "Timed run");
+        assert_eq!(choice_label("appearance", "auto"), "auto");
+        assert_eq!(choice_label("something_new", "whatever"), "whatever");
+    }
+
+    #[test]
+    fn overlay_choices_carry_the_server_tables_notes() {
+        // Palettes and styles already write their own one-line notes in
+        // `yap-server`. The panel reads that table rather than keeping a
+        // second copy that drifts.
+        let note = choice_note("overlay_theme", "neon").expect("neon has a note");
+        assert!(note.contains("cyan") || note.contains("electric"));
+
+        let note = choice_note("overlay_style", "strip").expect("strip has a note");
+        assert!(!note.is_empty());
+
+        assert_eq!(choice_note("accent", "pink"), None);
+        assert_eq!(choice_note("overlay_theme", "not-a-theme"), None);
+    }
+
+    #[test]
+    fn a_saved_accent_takes_effect_without_a_restart() {        // Pressing Save updated the file and nothing else: the window stayed the
         // colour it was. `appearance` was worse — it was never applied live at
         // all, because the component theme is changed through the app rather
         // than through this panel's own state.

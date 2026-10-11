@@ -230,6 +230,133 @@ impl Microphone {
             drop(stream);
         }
     }
+
+    /// Open the mic for a moment and report how loud the room is.
+    ///
+    /// The Setup screen's "Test mic" button. Separate from the recogniser's
+    /// stream on purpose: a test must never disturb the live count, and
+    /// shared-mode capture lets both listen at once on the platforms this
+    /// ships on. Short-lived — the stream is dropped before this returns.
+    ///
+    /// An empty name means the system default, the same convention as the
+    /// recogniser, so the test hears what the count would hear.
+    ///
+    /// # Errors
+    /// Whatever opening the device reports: no device, a busy device, a refused
+    /// format. The caller shows it and falls back to "talk on Live and watch
+    /// for words" — a failed test must never read as a working mic.
+    pub async fn probe_input_level(device_name: &str) -> Result<(ProbeVerdict, f32)> {
+        let host = cpal::default_host();
+
+        let device = if device_name.trim().is_empty() {
+            host.default_input_device()
+                .context("no default input device — pick one in settings")?
+        } else {
+            host.input_devices()?
+                .find(|d| {
+                    d.description()
+                        .map(|desc| desc.name() == device_name)
+                        .unwrap_or(false)
+                })
+                .with_context(|| {
+                    format!("no input device named {device_name:?} — pick one in settings")
+                })?
+        };
+
+        let config = device
+            .default_input_config()
+            .context("could not query the device's input format")?
+            .config();
+        let sample_rate = config.sample_rate as usize;
+        let channels = config.channels.max(1) as usize;
+
+        let buffer = Arc::new(Mutex::new(Vec::<f32>::new()));
+        let cb_buffer = Arc::clone(&buffer);
+        let stream = device
+            .build_input_stream(
+                config,
+                move |data: &[f32], _: &cpal::InputCallbackInfo| {
+                    let mut guard = match cb_buffer.lock() {
+                        Ok(g) => g,
+                        Err(_) => return,
+                    };
+                    if channels == 1 {
+                        guard.extend_from_slice(data);
+                    } else {
+                        for frame in data.chunks_exact(channels) {
+                            guard.push(frame.iter().sum::<f32>() / channels as f32);
+                        }
+                    }
+                },
+                |err| log::error!("microphone probe error: {err}"),
+                None,
+            )
+            .context("could not open an input stream")?;
+
+        stream.play().context("could not start capture")?;
+        // Long enough to say a sentence fragment, short enough not to feel
+        // like a recording.
+        tokio::time::sleep(std::time::Duration::from_millis(1_500)).await;
+        let _ = stream.pause();
+        drop(stream);
+
+        let samples = buffer.lock().map(|g| g.clone()).unwrap_or_default();
+
+        // The loudest 100 ms, not the average: an average over silence and one
+        // word calls a working mic quiet.
+        let window = (sample_rate / 10).max(1);
+        let mut peak: f32 = 0.0;
+        for chunk in samples.chunks(window) {
+            if chunk.len() < window / 2 {
+                continue;
+            }
+            peak = peak.max(yap_core::engine::rms(chunk));
+        }
+
+        Ok((classify_probe_level(peak), peak))
+    }
+}
+
+/// How loud a mic test heard.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProbeVerdict {
+    /// Nothing above room noise.
+    Silent,
+    /// Something, but too quiet to count on.
+    Quiet,
+    /// Loud and clear.
+    Good,
+}
+
+impl ProbeVerdict {
+    /// What the Setup screen says about it. Plain words, no numbers.
+    pub fn message(self) -> &'static str {
+        match self {
+            Self::Silent => "Heard nothing — is the right mic picked?",
+            Self::Quiet => "Very quiet — move closer, then test again",
+            Self::Good => "Heard you loud and clear",
+        }
+    }
+
+    /// Whether this is a mic to stream on.
+    pub fn ok(self) -> bool {
+        matches!(self, Self::Good)
+    }
+}
+
+/// Classify a mic test by its loudest 100 ms.
+///
+/// Pure so the thresholds are pinned by a test rather than tuned by feel on
+/// one machine: normal speech peaks well above 0.02 RMS, room noise sits below
+/// 0.005, and the middle is "technically working" rather than good.
+pub fn classify_probe_level(peak_rms: f32) -> ProbeVerdict {
+    if peak_rms < 0.005 {
+        ProbeVerdict::Silent
+    } else if peak_rms < 0.02 {
+        ProbeVerdict::Quiet
+    } else {
+        ProbeVerdict::Good
+    }
 }
 
 /// Convert from the device's sample rate to the 16 kHz every engine expects.
@@ -374,5 +501,49 @@ mod tests {
         assert_eq!(vad.min_silence_ms, 500);
         assert!(vad.min_speech_ms > 0);
         assert!(vad.max_speech_ms > vad.min_speech_ms);
+    }
+
+    #[test]
+    fn probe_thresholds_call_silence_silence_and_speech_good() {
+        // Tuned by physics, not feel: room noise sits below 0.005 RMS and
+        // normal speech peaks well above 0.02. The middle band is "technically
+        // working" rather than good — a mic there will drop quiet words.
+        use super::{ProbeVerdict, classify_probe_level};
+
+        assert_eq!(classify_probe_level(0.0), ProbeVerdict::Silent);
+        assert_eq!(classify_probe_level(0.004), ProbeVerdict::Silent);
+        assert_eq!(classify_probe_level(0.01), ProbeVerdict::Quiet);
+        assert_eq!(classify_probe_level(0.03), ProbeVerdict::Good);
+        assert_eq!(classify_probe_level(0.5), ProbeVerdict::Good);
+    }
+
+    #[test]
+    fn only_a_good_probe_is_a_mic_to_stream_on() {
+        use super::ProbeVerdict;
+
+        assert!(ProbeVerdict::Good.ok());
+        assert!(!ProbeVerdict::Quiet.ok());
+        assert!(!ProbeVerdict::Silent.ok());
+    }
+
+    #[test]
+    fn every_verdict_says_something_plain() {
+        // No numbers, no jargon — and each message must differ, or two verdicts
+        // read as one.
+        use super::ProbeVerdict;
+
+        let messages = [
+            ProbeVerdict::Silent.message(),
+            ProbeVerdict::Quiet.message(),
+            ProbeVerdict::Good.message(),
+        ];
+        for message in messages {
+            assert!(!message.is_empty());
+        }
+        assert_eq!(
+            messages.iter().collect::<std::collections::HashSet<_>>().len(),
+            3,
+            "verdicts must not share a message: {messages:?}",
+        );
     }
 }

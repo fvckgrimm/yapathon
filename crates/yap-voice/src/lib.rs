@@ -13,7 +13,7 @@ pub mod local;
 pub mod pipeline;
 pub mod segmenter;
 
-pub use capture::{InputDevice, Microphone, Resampler};
+pub use capture::{InputDevice, Microphone, ProbeVerdict, Resampler, classify_probe_level};
 pub use cloud::GroqEngine;
 pub use config::{BackendChoice, DetectedBackend};
 pub use local::WhisperEngine;

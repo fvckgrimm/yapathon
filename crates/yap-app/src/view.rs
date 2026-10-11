@@ -87,6 +87,13 @@ pub struct YapView {
     /// Whether the fiddly stuff (fix count, history) is expanded.
     /// Collapsed by default so first-timers see Start, not bookkeeping.
     show_details: bool,
+    /// The mic test's state: idle, listening, or what it heard.
+    mic_probe: MicProbe,
+    /// The task waiting on the mic test.
+    ///
+    /// Held so it is cancelled when its result no longer matters, the same
+    /// reason the settings panel holds its file-chooser task.
+    mic_probe_task: Option<gpui::Task<()>>,
     /// A weak handle to this view, for click handlers.
     ///
     /// Set during construction from the `Context<Self>` that `cx.new` provides,
@@ -243,6 +250,18 @@ fn limit_label(mode: RunMode) -> &'static str {
     }
 }
 
+/// What the mic test is doing.
+#[derive(Debug, Default)]
+enum MicProbe {
+    /// Never tested.
+    #[default]
+    Idle,
+    /// Listening right now — talk.
+    Testing,
+    /// What it heard.
+    Done { ok: bool, message: String },
+}
+
 /// Goal presets so nobody has to invent a number.
 const GOAL_PRESETS: [(u32, &str); 3] = [(1_000, "Quick · 1k"), (5_000, "Normal · 5k"), (10_000, "Marathon · 10k")];
 
@@ -320,6 +339,8 @@ impl YapView {
                 correction,
                 copied_url: false,
                 show_details: false,
+                mic_probe: MicProbe::Idle,
+                mic_probe_task: None,
                 _observe,
             }
         })
@@ -385,17 +406,21 @@ impl YapView {
     }
 
     /// Top tabs (narrow windows / OBS dock) and sidebar (wide windows) share
-    /// this switch. Icons make it scannable without reading.
-    fn render_tabs(&self, me: &gpui::WeakEntity<Self>, _cx: &mut App) -> impl IntoElement {
+    /// this switch. Icons make it scannable without reading. A dot on Settings
+    /// means unsaved changes — the autosave-lite: nothing is written for you
+    /// (a mic reload mid-run would be a nasty surprise), but you can see at a
+    /// glance that Settings still wants saving.
+    fn render_tabs(&self, me: &gpui::WeakEntity<Self>, cx: &mut App) -> impl IntoElement {
         use crate::segment::icon_segment_button;
 
+        let dirty = self.is_settings_dirty(cx);
         div().flex().flex_wrap().gap_2().children(
             Tab::ALL.into_iter().map(|tab| {
                 let me = me.clone();
                 icon_segment_button(
                     format!("nav-{}", tab.label()),
                     tab.icon(),
-                    tab.label(),
+                    self.nav_label(tab, dirty),
                     self.tab == tab,
                     move |_window, cx| {
                         let _ = me.update(cx, |this, _cx| this.tab = tab);
@@ -409,6 +434,7 @@ impl YapView {
     fn render_sidebar(&self, me: &gpui::WeakEntity<Self>, cx: &mut App) -> impl IntoElement {
         use crate::segment::icon_segment_button;
 
+        let dirty = self.is_settings_dirty(cx);
         div()
             .w(px(crate::theme::SIDEBAR_W))
             .flex_shrink_0()
@@ -431,7 +457,7 @@ impl YapView {
                 icon_segment_button(
                     format!("nav-{}", tab.label()),
                     tab.icon(),
-                    tab.label(),
+                    self.nav_label(tab, dirty),
                     self.tab == tab,
                     move |_window, cx| {
                         let _ = me.update(cx, |this, _cx| this.tab = tab);
@@ -449,6 +475,24 @@ impl YapView {
                     .text_color(Theme::muted(cx))
                     .child("talk · chat plays along"),
             )
+    }
+
+    /// Whether the settings panel has unsaved edits.
+    fn is_settings_dirty(&self, cx: &App) -> bool {
+        self.settings
+            .as_ref()
+            .map(|panel| panel.read(cx).is_dirty())
+            .unwrap_or(false)
+    }
+
+    /// What a nav button says. The id stays `nav-Settings` either way — only
+    /// the label grows the dot, so headless clicks keep working.
+    fn nav_label(&self, tab: Tab, dirty: bool) -> String {
+        if tab == Tab::Settings && dirty {
+            format!("{} ●", tab.label())
+        } else {
+            tab.label().to_string()
+        }
     }
 
     /// The settings panel.
@@ -1131,6 +1175,14 @@ impl YapView {
         self.settings.clone()
     }
 
+    /// Whether a mic test is in flight, for the headless test.
+    ///
+    /// Test-only: production reads the state by rendering it.
+    #[cfg(test)]
+    pub(crate) fn mic_probe_left_idle(&self) -> bool {
+        !matches!(self.mic_probe, MicProbe::Idle)
+    }
+
     /// The Live tab: hero + start + OBS, details collapsed by default.
     fn render_live(&self, model: &SessionModel, cx: &mut App) -> impl IntoElement {
         let show_details = self.show_details;
@@ -1266,19 +1318,7 @@ impl YapView {
                 },
                 cx,
             ))
-            .child(setup_card(
-                "2 · Microphone",
-                &mic_line,
-                mic_ok,
-                "Check mics",
-                {
-                    let me = me.clone();
-                    move |_, _, cx| {
-                        let _ = me.update(cx, |this, _| this.tab = Tab::Settings);
-                    }
-                },
-                cx,
-            ))
+            .child(self.render_mic_step(&mic_line, mic_ok, cx))
             .child(self.render_goal_step(goal_num, cx))
             .child(setup_card(
                 "4 · Chat (optional)",
@@ -1377,6 +1417,136 @@ impl YapView {
             .into_any_element()
     }
 
+    /// Step 2: which mic, plus a button that proves it hears you.
+    ///
+    /// The list says the mic *exists*; only a test says it *hears*. The probe
+    /// opens the same device the recogniser would and reports the loudest
+    /// moment — independent of the live count, so testing never disturbs it.
+    fn render_mic_step(&self, mic_line: &str, mic_ok: bool, cx: &mut App) -> impl IntoElement {
+        let testing = matches!(self.mic_probe, MicProbe::Testing);
+        let me = self.me.clone();
+
+        let result: gpui::AnyElement = match &self.mic_probe {
+            MicProbe::Idle | MicProbe::Testing => div().into_any_element(),
+            MicProbe::Done { ok, message } => div()
+                .text_size(BODY)
+                .text_color(if *ok {
+                    Theme::success(cx)
+                } else {
+                    Theme::warning(cx)
+                })
+                .child(message.clone())
+                .into_any_element(),
+        };
+
+        div()
+            .p_3()
+            .rounded_lg()
+            .bg(Theme::surface(cx))
+            .border_1()
+            .border_color(Theme::border(cx))
+            .flex()
+            .flex_col()
+            .gap_2()
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap_2()
+                    .child(status_dot(mic_ok, cx))
+                    .child(
+                        div()
+                            .text_size(BODY)
+                            .font_weight(gpui::FontWeight::BOLD)
+                            .child("2 · Microphone"),
+                    ),
+            )
+            .child(
+                div()
+                    .text_size(LABEL)
+                    .text_color(Theme::muted(cx))
+                    .child(mic_line.to_string()),
+            )
+            .child(
+                div()
+                    .flex()
+                    .flex_wrap()
+                    .gap_2()
+                    .child(
+                        Button::new("test-mic")
+                            .label(if testing {
+                                "Listening… talk now!"
+                            } else {
+                                "Test mic — talk now"
+                            })
+                            .disabled(testing)
+                            .on_click(move |_, _, cx| {
+                                let _ = me.update(cx, |this, cx| this.test_mic(cx));
+                            }),
+                    )
+                    .child(
+                        Button::new("change-mic")
+                            .label("Change mic")
+                            .on_click({
+                                let me = self.me.clone();
+                                move |_, _, cx| {
+                                    let _ = me.update(cx, |this, _| this.tab = Tab::Settings);
+                                }
+                            }),
+                    ),
+            )
+            .child(result)
+            .into_any_element()
+    }
+
+    /// Run the mic test: open the configured mic briefly, report the loudest
+    /// moment, and never touch the live count.
+    ///
+    /// The probe runs on the tokio runtime, not here: opening a device can
+    /// take a moment, and this is the GPUI thread. The result comes back over
+    /// a channel into a task on this entity — the same shape the settings
+    /// panel's file chooser uses.
+    fn test_mic(&mut self, cx: &mut Context<Self>) {
+        if matches!(self.mic_probe, MicProbe::Testing) {
+            return;
+        }
+        self.mic_probe = MicProbe::Testing;
+        cx.notify();
+
+        // What the recogniser would hear: the configured mic, or the default.
+        let device = self
+            .settings
+            .as_ref()
+            .map(|panel| panel.read(cx).model_value("input_device"))
+            .unwrap_or_default();
+
+        let (sender, receiver) = async_channel::bounded::<Result<(bool, String), String>>(1);
+
+        crate::runtime::spawn(async move {
+            let result = match yap_voice::Microphone::probe_input_level(&device).await {
+                Ok((verdict, _)) => Ok((verdict.ok(), verdict.message().to_string())),
+                Err(error) => Err(format!(
+                    "Couldn't test it ({error:#}) — talk on Live and watch for words instead"
+                )),
+            };
+            let _ = sender.send_blocking(result);
+        });
+
+        self.mic_probe_task = Some(cx.spawn(async move |view, cx| {
+            if let Ok(result) = receiver.recv().await {
+                let _ = view.update(cx, |this, cx| {
+                    this.mic_probe = match result {
+                        Ok((ok, message)) => MicProbe::Done { ok, message },
+                        Err(message) => MicProbe::Done {
+                            ok: false,
+                            message,
+                        },
+                    };
+                    cx.notify();
+                });
+            }
+        }));
+    }
     /// Step 3: goal presets + custom field, inline so nobody opens Settings.
     fn render_goal_step(&self, current: u32, cx: &mut App) -> impl IntoElement {
         let me = self.me.clone();
@@ -2066,6 +2236,10 @@ mod tests {
         cx.update(|window, cx| window.draw(cx).clear(cx));
         cx.update(|window, cx| window.click("nav-Settings", cx));
         cx.update(|window, cx| window.draw(cx).clear(cx));
+        // Advanced sits behind a disclosure — open it so every section has a
+        // button, the way a streamer would.
+        cx.update(|window, cx| window.click("show-advanced", cx));
+        cx.update(|window, cx| window.draw(cx).clear(cx));
 
         let sections = crate::settings::SETTINGS_SECTIONS.len();
         assert!(sections > 1, "there is more than one section to switch to");
@@ -2096,8 +2270,147 @@ mod tests {
     }
 
     #[gpui_kit::test]
-    fn a_credential_input_is_masked_and_watched_by_nothing(cx: &mut gpui_kit::TestAppContext) {
-        // The mechanism that keeps a token out of `settings.toml`.
+    fn advanced_stays_hidden_until_asked_for(cx: &mut gpui_kit::TestAppContext) {
+        // Advanced holds ports and token slots nobody should need. If it sits
+        // in the row, a settings screen becomes something nobody reads — so it
+        // hides behind a disclosure, and closing the disclosure while looking
+        // at it falls back to the first section rather than stranding the
+        // panel on a section with no button.
+        use gpui_kit::test::TestWindowExt as _;
+
+        let advanced = crate::settings::SETTINGS_SECTIONS
+            .iter()
+            .position(|s| s.title == "Advanced")
+            .expect("an Advanced section");
+
+        let (root, cx) = open_window!(cx);
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        cx.update(|window, cx| window.click("nav-Settings", cx));
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+
+        assert!(
+            cx.update(|window, _| window
+                .try_find(SharedId::section(advanced))
+                .is_none()),
+            "Advanced must not have a button until the disclosure opens",
+        );
+
+        cx.update(|window, cx| window.click("show-advanced", cx));
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+
+        assert!(
+            cx.update(|window, _| window
+                .try_find(SharedId::section(advanced))
+                .is_some()),
+            "opening the disclosure must reveal Advanced",
+        );
+
+        cx.update(|window, cx| {
+            window.click(SharedId::section(advanced), cx);
+            window.draw(cx).clear(cx);
+        });
+        cx.update(|window, cx| window.click("show-advanced", cx));
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+
+        let (section, open) = cx.update(|_window, cx| {
+            let panel = root
+                .read(cx)
+                .view
+                .read(cx)
+                .settings()
+                .expect("a settings panel");
+            let panel = panel.read(cx);
+            (panel.section(), panel.is_advanced_open())
+        });
+
+        assert!(!open, "the disclosure must close");
+        assert_eq!(
+            section, 0,
+            "closing it while on Advanced must fall back rather than strand the panel",
+        );
+    }
+
+    #[gpui_kit::test]
+    fn the_setup_screen_offers_a_mic_test(cx: &mut gpui_kit::TestAppContext) {
+        // The device list says a mic *exists*; only a test says it *hears*.
+        // Asserts the button is on screen and reachable — the probe itself
+        // needs real hardware, so its thresholds are pinned by unit tests in
+        // `yap-voice` instead.
+        use gpui_kit::test::TestWindowExt as _;
+
+        let (root, cx) = open_window!(cx);
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        cx.update(|window, cx| window.click("nav-Setup", cx));
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+
+        let tab = cx.update(|_window, cx| root.read(cx).view.read(cx).tab);
+        assert_eq!(tab, Tab::Setup);
+
+        cx.update(|window, cx| window.click("test-mic", cx));
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+
+        // Clicking must arm the test rather than do nothing — whether it hears
+        // anything depends on hardware no test machine can promise, and a
+        // mic-less machine may already have failed back to Done.
+        let left_idle = cx.update(|_window, cx| {
+            root.read(cx)
+                .view
+                .read(cx)
+                .mic_probe_left_idle()
+        });
+        assert!(
+            left_idle,
+            "clicking Test mic must start listening, even with no mic attached",
+        );
+    }
+
+    #[gpui_kit::test]
+    fn unsaved_settings_put_a_dot_on_the_settings_tab(cx: &mut gpui_kit::TestAppContext) {
+        // Explicit Save stays (a mic reload mid-run would be a nasty surprise),
+        // so the least the window can do is show that Settings still wants
+        // saving. Clicks a real mic option to dirty the panel — picking the
+        // already-picked default still arms Save, which is what makes this
+        // deterministic with or without hardware.
+        use gpui_kit::test::TestWindowExt as _;
+
+        let (root, cx) = open_window!(cx);
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        cx.update(|window, cx| window.click("nav-Settings", cx));
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+
+        let dirty_before = cx.update(|_window, cx| {
+            let view = root.read(cx).view.clone();
+            view.read(cx).is_settings_dirty(cx)
+        });
+        assert!(!dirty_before, "a fresh panel must not claim edits");
+
+        cx.update(|window, cx| {
+            window.click("settings-choice-input_device-default", cx);
+            window.draw(cx).clear(cx);
+        });
+
+        let dirty_after = cx.update(|_window, cx| {
+            let view = root.read(cx).view.clone();
+            view.read(cx).is_settings_dirty(cx)
+        });
+        assert!(dirty_after, "picking a mic must arm Save");
+
+        let labels = cx.update(|_window, cx| {
+            let view = root.read(cx).view.clone();
+            let view = view.read(cx);
+            (
+                view.nav_label(Tab::Settings, true),
+                view.nav_label(Tab::Settings, false),
+                view.nav_label(Tab::Live, true),
+            )
+        });
+        assert_eq!(labels.0, "Settings ●");
+        assert_eq!(labels.1, "Settings");
+        assert_eq!(labels.2, "Live", "the dot is only ever on Settings");
+    }
+
+    #[gpui_kit::test]
+    fn a_credential_input_is_masked_and_watched_by_nothing(cx: &mut gpui_kit::TestAppContext) {        // The mechanism that keeps a token out of `settings.toml`.
         //
         // Save is the panel's only commit and Save writes a file, so the whole
         // safety of the credential store rests on one structural fact: the

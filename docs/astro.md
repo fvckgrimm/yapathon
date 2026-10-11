@@ -13,8 +13,8 @@ It is genuinely good at one thing neither native API can do: it reports
 for anywhere. Native YouTube gives memberships, Super Chats and member messages;
 it cannot tell you who pressed Subscribe.
 
-Settings → Astro, one field per platform: **YouTube account** and **Twitch
-account**. Copy each JWT from the StreamElements dashboard while switched to that
+Settings → Chat setup, one field per platform: **YouTube connection** and **Twitch
+via StreamElements**. Copy each JWT from the StreamElements dashboard while switched to that
 account, and leave the other empty. Each is its own keyring entry, so the panel
 says whether each is set and clearing one leaves the other alone.
 

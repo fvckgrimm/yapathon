@@ -210,7 +210,7 @@ generalises that into one rule, which is why the table above needs no new code.
 ## Built: Astro as a third platform
 
 `crates/yap-events/src/astro.rs`, off by default, alongside rather than instead
-of both native paths. Configured in Settings → Astro; one token per platform
+of both native paths. Configured in Settings → Chat setup; one token per platform
 account; prices shared with EventSub because both name events
 `<platform>:<kind>`.
 

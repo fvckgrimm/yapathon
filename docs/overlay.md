@@ -22,7 +22,7 @@ one.
 
 ## Looks
 
-Two independent choices in **Settings → Server**. Pick a colour and a shape;
+Two independent choices in **Settings → On stream**. Pick a colour and a shape;
 anything goes with anything, so there are 28 combinations and only seven
 palettes and four styles had to be written.
 

@@ -58,8 +58,9 @@ uploaded anywhere, and it works with your connection off. The `.en` models are
 English-only; the larger non-`.en` files handle other languages and cost more to
 run.
 
-Put it wherever you like, then point the app at it in **Settings → Engine →
-Model file**. It will also look in `~/.local/share/yap-a-thon/models/` and
+Put it wherever you like, then point the app at it in **Settings → Voice →
+Voice model** (or just open **Setup** — it lists every model found, no typing
+needed). It will also look in `~/.local/share/yap-a-thon/models/` and
 `%APPDATA%\yap-a-thon\models\` without being told to.
 
 **3. Talk.** Press **Start**. Words appear.
@@ -71,8 +72,8 @@ letting chat move the goal too.
 
 **Twitch** — register an application at
 [dev.twitch.tv/console/apps](https://dev.twitch.tv/console/apps), set your
-channel and application id in **Settings → Twitch**, and put a user token with
-the channel scopes in **Settings → Twitch → User token**.
+channel and application id in **Settings → Chat setup**, and put a user token with
+the channel scopes in **Settings → Chat setup → Twitch login**.
 
 **YouTube, and Twitch and YouTube at once** — the easier path, through
 [StreamElements](https://streamelements.com). No OAuth project, no quota, and it
@@ -81,9 +82,9 @@ reports one event the YouTube API cannot report at all.
 1. Sign in at **streamelements.com**.
 2. **Click the avatar in the top-right corner**, then your channel name, then
    the correct account. Copy the JWT token.
-3. In the app, go to **Settings → Astro → YouTube account → Set…**, and paste it.
+3. In the app, go to **Settings → Chat setup → YouTube connection → Set…**, and paste it.
 4. **Click the avatar again** and switch to your *other* account.
-5. Copy that token too, into **Twitch account**.
+5. Copy that token too, into **Twitch via StreamElements**.
 
 The tokens are per account — each only ever sees its own platform, and copying
 the wrong one connects to the other account's room. If it is not working, the
@@ -95,8 +96,9 @@ file that gets synced and pasted into support threads. If that store is locked
 the app says so and explains how to unlock it on your platform, rather than
 hanging; see [Running](docs/running.md#if-the-credential-store-is-locked).
 
-Then price your events in **Settings → Events**. Nothing is priced until you
-price it, and the app tells you when an event arrives that you have not priced.
+Then price your events in **Settings → Rewards** (or hit a preset: **Chill** /
+**Hype**). Nothing is priced until you price it, and the app tells you when an
+event arrives that you have not priced.
 
 ## Documentation
 

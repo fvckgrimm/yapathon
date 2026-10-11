@@ -99,7 +99,7 @@ different fixes, and an empty list claims the first.
 Where to *get* a model is in [Setup](setup.md). This is choosing one you already
 have.
 
-The Engine section has two ways in, and neither requires typing an absolute path:
+The Voice section has two ways in, and neither requires typing an absolute path:
 
 - **The list.** Every ggml model found in the searched directories, with its
   size, largest first. Click one, then Save.
@@ -118,6 +118,7 @@ configured path that does not exist is replaced with one found in
 which it picked. An existing path is never overridden, so pointing at a model on
 another drive sticks.
 
-Whichever way you choose it, the change needs a restart to take effect — the
-model is loaded once at startup, and swapping it mid-yapathon would mean the
-engine changed halfway through a count. The panel says so while a run is live.
+Whichever way you choose it, Save reloads the recogniser on the spot — words
+spoken during the second-long swap are not counted, which the panel says. The
+panel also says so while a run is live, since these settings describe the next
+run, not the current one.

@@ -17,8 +17,8 @@
 
 # --- Server ----------------------------------------------------------------
 #
-# OBS points at http://<bind_address>:<port>/overlay. The Run tab has the URL and
-# copies it when you click it.
+# OBS points at http://<bind_address>:<port>/overlay. The Live tab has the URL and
+# a button that copies it.
 #
 # Keep this on 127.0.0.1 unless you know why not. The server publishes the
 # transcript and the goal with no authentication, because it has no network
@@ -56,7 +56,7 @@ overlay_theme = "card"
 # --- Where to put the model ------------------------------------------------
 #
 # Download a ggml model and either leave this at the default and put the file in
-# the models directory, or point it anywhere on disk. The Engine section of the
+# the models directory, or point it anywhere on disk. The Voice section of the
 # settings tab lists everything it finds and has a file chooser for the rest.
 #
 #   https://huggingface.co/ggerganov/whisper.cpp/tree/main
