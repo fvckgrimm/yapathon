@@ -20,6 +20,36 @@ It starts visible even with no yapathon running — it says "no yapathon" rather
 than showing nothing — so an empty source is always distinguishable from a broken
 one.
 
+## Looks
+
+Seven, in **Settings → Overlay look**. To try one without changing anything,
+add `?theme=name` to the overlay URL in a browser tab — `?theme=strip`,
+`?theme=big`, and so on.
+
+| | |
+| --- | --- |
+| **Card** | the default: a dark rounded panel in the bottom-right |
+| **Minimal** | square, borderless, quiet, and in the top-left |
+| **Cute** | pastel and pill-shaped, with a soft rounded font |
+| **Neon** | hard corners, one electric accent, a glow |
+| **Mono** | greyscale and small, for a channel that is already loud |
+| **Strip** | one line across the bottom, for a busy corner |
+| **Big** | just the number, centred and large |
+
+The first five are one layout in five palettes — good for a rebrand. The last two
+change the *shape*, which is what you want when the corner is not yours to use:
+
+- **Strip** is for a channel with an alert or a chat box already in the corner.
+  Every other look wants the same real estate; this one runs along the bottom
+  edge instead, with the progress bar filling whatever width the words left over.
+- **Big** is for a number that has to read from across a room. It drops the bar
+  and the status line and shows the count alone at 7rem, because "5,000 / 10,000"
+  already says what the bar says.
+
+Switching looks is live — no need to re-add the Browser Source. A URL with
+`?theme=` pinned is left alone, deliberately: copying that URL into OBS is how you
+chose it.
+
 ### If the Browser Source shows nothing
 
 Work down this list in order. Each step rules out a different cause, and the

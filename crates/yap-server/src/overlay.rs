@@ -286,6 +286,185 @@ const OVERLAY_HTML: &str = r##"<!doctype html>
     --bar-radius: 0.25rem;
     --font: ui-monospace, "JetBrains Mono", Menlo, Consolas, monospace;
   }
+
+  /* --- The two that change the shape, not the colour ------------------------
+
+     Every theme above is one layout in a different palette, which is the right
+     answer for a rebrand and the wrong one for a corner someone else is already
+     using. These two are laid out differently, so the choices are genuinely
+     different: where they sit, how much room they take, and how much of the
+     screen they give back.
+
+     Their layout lives in rules of their own rather than in the variable block
+     above, because the variable block is the part the tests read — it is the
+     colours, and a theme that could not be read for its colours would be a
+     theme nobody could check. */
+
+  /* Strip: one line, edge to edge, along the bottom.
+     For a channel with an alert or a chat box in the corner. The other five all
+     want the same real estate, and a streamer who cannot move it needs one that
+     does not. It is a row rather than a column, so the bar grows into whatever
+     width is left over instead of sitting under a number.
+
+     Square corners and no border, because a full-width strip with rounded ends
+     reads as a button. */
+  body[data-theme="strip"] {
+    --card: rgba(8, 8, 12, 0.88);
+    --card-solid: #08080c;
+    --card-border: none;
+    --radius: 0;
+    --pad-y: 0.375rem;
+    --pad-x: 1rem;
+    --count-size: 1.375rem;
+    --count-weight: 700;
+    --fg: #fafafa;
+    --dim: #a1a1aa;
+    --accent: #4ade80;
+    --warn: #fbbf24;
+    --capped: #f87171;
+    --track: rgba(255, 255, 255, 0.14);
+    --bar-radius: 0;
+    --corner-x: 0;
+    --corner-y: 0;
+  }
+  body[data-theme="strip"] .card {
+    /* Row, full width, pinned to the bottom edge. `min-width` goes because this
+       is as wide as the source, and `max-width` because the card *is* the strip
+       — left in place it would cap the row at 28rem and defeat the whole theme.
+     */
+    display: flex;
+    flex-direction: row;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 0.75rem;
+    left: 0;
+    right: 0;
+    top: auto;
+    bottom: 0;
+    min-width: 0;
+    max-width: none;
+  }
+  body[data-theme="strip"] .bar {
+    /* The only thing that grows. Everything else keeps its natural width, so
+       the bar absorbs whatever the words and the digits did not need. */
+    flex: 1 1 8rem;
+    min-width: 4rem;
+    margin: 0;
+  }
+  body[data-theme="strip"] .status,
+  body[data-theme="strip"] .count,
+  body[data-theme="strip"] .row,
+  body[data-theme="strip"] .event,
+  body[data-theme="strip"] .note {
+    /* Without this a long event line squeezes the bar rather than the text
+       around it, and the one thing that must stay readable is the one that
+       shrinks. */
+    flex: 0 0 auto;
+    margin-top: 0;
+  }
+  body[data-theme="strip"] .row {
+    /* The two halves of this row are already separated by the gap; without this
+       they spread to the far edges of a full-width strip. */
+    gap: 0.75rem;
+  }
+
+  /* Big: one number, centred, nothing else.
+
+     A different proposition rather than a different palette — the count alone,
+     at a size readable from across a room, with no bar and no chrome. The number
+     carries the progress on its own: "5,000 / 10,000" says the same thing the
+     bar does, and a bar under a number that large is a second answer to a
+     question already answered.
+
+     It keeps a plate behind the digits, for the same reason `minimal` does: no
+     card at all means white text over whatever is happening in the scene, which
+     is unreadable far more often than it is not. */
+  body[data-theme="big"] {
+    --card: rgba(0, 0, 0, 0.62);
+    --card-solid: #000000;
+    --card-border: none;
+    --radius: 0.5rem;
+    --pad-y: 1rem;
+    --pad-x: 2rem;
+    --count-size: 7rem;
+    --count-weight: 800;
+    --count-spacing: -0.03em;
+    --fg: #ffffff;
+    --dim: #d4d4d8;
+    --accent: #4ade80;
+    --warn: #fbbf24;
+    --capped: #f87171;
+    --track: rgba(255, 255, 255, 0.2);
+    --corner-x: auto;
+    --corner-y: 2rem;
+    /* Centred on the horizontal axis.
+     *
+     * In its own rule rather than in the variable block above, because the base
+     * `.card` rule sets `right: var(--corner-x)` directly. Two selectors of
+     * equal specificity settle by source order, so positioning declared beside
+     * the colours — earlier in the file — loses to the base rule and the card
+     * stays hard against the edge it was supposed to be centred in. A
+     * `body[data-theme="big"] .card` selector is more specific and wins.
+     *
+     * `left: 50%` alone would put the card's *left edge* at the middle rather
+     * than its centre, so something has to pull it back by half its width.
+     *
+     * The obvious thing — `transform: translateX(-50%)` — was tried and
+     * **removed the card from the screen entirely**: with the base rule's
+     * `min-width` in play the shift lands the whole card off-canvas. A
+     * `transform` here is also the one property that would promote the card to
+     * its own compositing layer, which is the mechanism the `filter` and
+     * `text-shadow` bans exist to avoid.
+     *
+     * So it is centred by layout instead of arithmetic: `left: 0; right: 0`
+     * makes the card as wide as the source and `margin-inline: auto` centres
+     * that box. No offset is computed, so nothing can fall out of step with the
+     * digit count, and no layer is created.
+     *
+     * Two things have to be undone for that to work. `min-width` stops `auto`
+     * margins centring anything — a minimum width wins over the free space they
+     * distribute — so it is cleared here. And `max-width` would cap the card
+     * below the source width, leaving a gap that reads as off-centre again. */
+    --corner-x: 0;
+    --corner-y: 2rem;
+  }
+  body[data-theme="big"] .card {
+    /* Shrink to the digits, then centre *that*. `width: fit-content` has to come
+       first: with `left: 0; right: 0` alone the card box spans the whole source
+       and the dark plate runs edge to edge, so the number is centred inside a
+       full-width bar rather than a plate around the number. */
+    width: fit-content;
+    max-width: calc(100% - 4rem);
+    left: 0;
+    right: 0;
+    top: auto;
+    bottom: var(--corner-y);
+    margin-inline: auto;
+    /* Cleared because a minimum width beats the free space `margin-inline: auto`
+       distributes, which is the whole mechanism being used to centre this. */
+    min-width: 0;
+    /* Keeps "/ 10,000" beside the count rather than wrapped under it. At 7rem
+       the digits are wide enough that a wrap is easy to reach, and a target
+       that has dropped to its own line reads as a second number. */
+    white-space: nowrap;
+  }
+  body[data-theme="big"] .status,
+  body[data-theme="big"] .bar,
+  body[data-theme="big"] .row {
+    /* The parts that would make this the card theme again. */
+    display: none;
+  }
+  body[data-theme="big"] .count,
+  body[data-theme="big"] .event,
+  body[data-theme="big"] .note {
+    text-align: center;
+  }
+  body[data-theme="big"] .event {
+    margin-top: 0.25rem;
+  }
+  body[data-theme="big"] .note {
+    margin-top: 0.5rem;
+  }
 </style>
 </head>
 <body>
@@ -892,6 +1071,16 @@ pub const OVERLAY_THEMES: &[OverlayTheme] = &[
         label: "Mono",
         note: "greyscale and small, for a channel that is already loud",
     },
+    OverlayTheme {
+        id: "strip",
+        label: "Strip",
+        note: "one line across the bottom, for a busy corner",
+    },
+    OverlayTheme {
+        id: "big",
+        label: "Big",
+        note: "just the number, centred and large",
+    },
 ];
 
 /// The theme used when nothing is configured.
@@ -1307,6 +1496,137 @@ mod tests {
     }
 
     #[test]
+    fn a_theme_that_changes_the_shape_actually_says_so() {
+        // The two layout themes are the reason this file has a second kind of
+        // theme rule. A `strip` that kept the card's column layout, or a `big`
+        // that kept the bar, would satisfy every other test here — it has a
+        // rule, it has legible colours, it is offered by the panel — while
+        // being the `card` theme under a new name.
+        //
+        // So check the properties that only the *shape* has: a strip is a row
+        // spanning the full width, and a big number has no bar under it.
+        let strip = layout_rule("strip", &[".card"]).expect("strip has a layout rule for the card");
+        assert!(
+            strip.contains("flex-direction: row;"),
+            "strip must lay the card out as a row, not the default column. Got: {strip}",
+        );
+        assert!(
+            strip.contains("left: 0;") && strip.contains("right: 0;"),
+            "strip must span the source rather than sit in a corner. Got: {strip}",
+        );
+
+        let strip_bar = layout_rule("strip", &[".bar"]).expect("strip lays out its bar");
+        assert!(
+            strip_bar.contains("flex: 1"),
+            "the bar is what fills a strip; everything else keeps its width. Got: {strip_bar}",
+        );
+
+        // The centring, which was wrong twice before it was right.
+        //
+        // Both failures were silent: the theme had a rule, its colours passed
+        // the contrast check, and it rendered *something* — just not in the
+        // middle. First with `left: 50%` and no pull-back, so the card hung off
+        // the right edge; then with `translateX(-50%)`, which put the entire
+        // card off-screen and left a blank source. Nothing else in the suite
+        // can see either: a theme that is present, legible and in the panel
+        // passes every other test here.
+        //
+        // What makes it centre is layout rather than arithmetic — both edges
+        // pinned, with `margin-inline: auto` distributing the slack between
+        // them. Asserted as those together, because any one of them alone
+        // leaves it visibly off-centre.
+        let big_card = layout_rule("big", &[".card"]).expect("big positions its card");
+        for (property, why) in [
+            (
+                "margin-inline: auto;",
+                "without auto margins nothing is centred at all",
+            ),
+            ("left: 0;", "an unpinned edge lets the card sit against it"),
+            ("right: 0;", "the card needs both edges to span the source"),
+            (
+                "min-width: 0;",
+                "a minimum width beats the free space the margins distribute",
+            ),
+            (
+                "width: fit-content;",
+                "otherwise the plate spans the source and only the text is centred",
+            ),
+        ] {
+            assert!(
+                big_card.contains(property),
+                "big's card needs {property:?} — {why}. Got: {big_card}",
+            );
+        }
+
+        // And explicitly not the arithmetic version, which is the thing that
+        // removed the overlay from the screen entirely.
+        assert!(
+            !big_card.contains("transform:"),
+            "big must not place itself with a transform: one already took the \
+             whole card off-canvas, and it promotes a compositing layer that CEF \
+             can come back empty. Got: {big_card}",
+        );
+
+        // The strip has the mirror-image requirement — full width, pinned to the
+        // bottom edge — so the two themes must not be able to drift into each
+        // other by accident.
+        let strip_card = layout_rule("strip", &[".card"]).expect("strip positions its card");
+        for property in [
+            "left: 0;",
+            "right: 0;",
+            "bottom: 0;",
+            "flex-direction: row;",
+        ] {
+            assert!(
+                strip_card.contains(property),
+                "strip's card needs {property:?} to span the source. Got: {strip_card}",
+            );
+        }
+        assert!(
+            !strip_card.contains("margin-inline: auto"),
+            "strip spans the full width, so centring it would undo the theme. \
+             Got: {strip_card}",
+        );
+
+        // One grouped rule rather than three, so it is looked up by the
+        // selector that leads it.
+        let big_hidden =
+            layout_rule("big", &[".status"]).expect("big hides its status, bar and row together");
+        // The rule was found *by* its selector, so `.status` is what located it.
+        // What the body has to say is that the element is hidden.
+        assert!(
+            big_hidden.contains("display: none;"),
+            "big is one number with nothing else. Got: {big_hidden}",
+        );
+
+        // And neither may reach for the properties OBS's CEF cannot render —
+        // the same list the whole-page test checks, checked here per theme so a
+        // new one cannot smuggle one in without that test having to find it.
+        //
+        // Comments are stripped first. The file explains *why* each property is
+        // banned and names them in doing so — this theme's own comment records
+        // that a `transform` was tried and removed the card — so a naive
+        // substring search finds the explanation and fails on it, which is the
+        // kind of check that gets deleted the first time it is inconvenient.
+        for theme in OVERLAY_THEMES {
+            let rule = strip_css_comments(&theme_rule(theme.id).unwrap_or_default());
+            for banned in [
+                "filter:",
+                "text-shadow",
+                "backdrop-filter",
+                "mix-blend-mode",
+                "clip-path",
+            ] {
+                assert!(
+                    !rule.contains(banned),
+                    "{}: {banned:?} is not renderable in OBS",
+                    theme.id,
+                );
+            }
+        }
+    }
+
+    #[test]
     fn every_theme_is_legible_over_its_own_card() {
         // The whole point of a theme is that it looks good; the one thing it
         // cannot do is become unreadable. Every theme's text and accent are
@@ -1346,6 +1666,67 @@ mod tests {
         let open = rest.find('{')?;
         let close = rest[open..].find('}')?;
         Some(rest[open + 1..open + close].to_string())
+    }
+
+    /// The body of a theme's *layout* rule — the one that positions something,
+    /// as opposed to the colour block.
+    ///
+    /// [`theme_rule`] cannot answer this: it matches `body[data-theme="x"] {`
+    /// first, which is the colours, and stops at its closing brace. A layout
+    /// rule sits under a longer selector and has to be found by that.
+    ///
+    /// Matched on *any* of `selectors` rather than an exact selector list,
+    /// because a grouped rule is written across several lines and `cargo fmt`
+    /// reflows long selector lists — an exact match here would break on a
+    /// reformat rather than on a real fault.
+    ///
+    /// Scoped to the rule that owns the selector, because `flex-direction: row`
+    /// and `display: none` appear in more than one: searching the whole page
+    /// passes a `strip` that has been quietly reverted to a column by the rule
+    /// next door.
+    fn layout_rule(id: &str, selectors: &[&str]) -> Option<String> {
+        let html = overlay_html();
+        let prefix = format!("body[data-theme=\"{id}\"]");
+
+        // Every rule on this theme, paired with its selector list.
+        //
+        // `selector_start` is where `prefix` was found, which is the *start* of
+        // the selector rather than the rule's opening brace — so the brace is
+        // searched for from there, and `at` advances past the whole rule so the
+        // next match is the following one and not this one again.
+        let mut at = 0;
+        while let Some(found) = html[at..].find(&prefix) {
+            let selector_start = at + found;
+            let open = selector_start
+                + html[selector_start..]
+                    .find('{')
+                    .expect("a selector is followed by a brace");
+
+            let selector = &html[selector_start..open];
+            let body_start = open + 1;
+            let close = body_start + html[body_start..].find('}').expect("a rule body is closed");
+
+            // Compared against each selector in a *group*, not the whole list:
+            // `body[data-theme="x"] .status, body[data-theme="x"] .bar {…}`
+            // reads as one rule but is three selectors, and only the last ends
+            // the string.
+            //
+            // Each is matched on ending with the wanted class rather than
+            // containing it, so the colour block — whose selector is exactly
+            // `body[data-theme="x"] ` — cannot answer a lookup for `.card` with
+            // a rule that positions nothing.
+            let grouped = selector.split(',').map(str::trim);
+            if grouped
+                .clone()
+                .any(|part| selectors.iter().any(|want| part.ends_with(want)))
+            {
+                return Some(html[body_start..close].to_string());
+            }
+
+            at = close + 1;
+        }
+
+        None
     }
 
     /// The `#rrggbb` value a custom property is given in a block of CSS.

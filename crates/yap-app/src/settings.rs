@@ -260,7 +260,7 @@ const SERVER: &[Field] = &[
         key: "overlay_theme",
         label: "Overlay look",
         kind: FieldKind::Choice,
-        options: &["card", "minimal", "cute", "neon", "mono"],
+        options: &["card", "minimal", "cute", "neon", "mono", "strip", "big"],
         help: Some(
             "what OBS shows; preview one at a time by adding ?theme=name to the \
              overlay URL in a browser",
