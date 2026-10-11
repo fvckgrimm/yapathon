@@ -107,7 +107,7 @@ mod tests {
     use gpui_kit::assets::IconName;
     use gpui_kit::test::TestWindowExt as _;
     use gpui_kit::{
-        App, InteractiveElement as _, IntoElement, ParentElement as _, Render, SharedString,
+        InteractiveElement as _, IntoElement, ParentElement as _, Render, SharedString,
         Styled as _, Window, div, px,
     };
 
