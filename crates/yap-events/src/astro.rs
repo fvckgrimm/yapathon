@@ -25,19 +25,21 @@
 //! subscriptions with different tokens would be tidier, but the subscribe frame
 //! does carry its own token so it may work; untested, so not assumed.
 //!
-//! ## Mock events are dropped
+//! ## Mock events are dropped unless Test Mode is on
 //!
 //! StreamElements marks simulated activity with `isMock: true` — the widget
-//! editor's "test" button produces it. Counting those would mean a yapathon
-//! could be extended by a cheer nobody sent, so they are ignored outright.
+//! editor's "test" button produces it. Counting those by default would mean a
+//! yapathon could be extended by a cheer nobody sent, so they are ignored
+//! outright.
 //!
-//! `YAP_ALLOW_MOCK_EVENTS=1` counts them anyway, for testing the whole chain
-//! end to end without real viewers. An environment variable rather than a
-//! setting because `settings.toml` is exactly the file that gets synced to a
-//! streaming machine and pasted into support threads — a test switch does not
-//! belong in one. Anything accepted this way is relabelled `(mock)` so it is
-//! visible as fake in the overlay, the dock and the window rather than
-//! indistinguishable from something a viewer actually did.
+//! Test Mode counts them anyway, for trying the whole chain end to end without
+//! real viewers. It is a switch in Setup (session-only, deliberately *not* in
+//! `settings.toml`, which is exactly the file that gets synced to a streaming
+//! machine and pasted into support threads), seeded from `YAP_ALLOW_MOCK_EVENTS`
+//! at launch so the old env-var workflow keeps working. Anything accepted this
+//! way is relabelled `(mock)` so it is visible as fake in the overlay, the dock
+//! and the window rather than indistinguishable from something a viewer actually
+//! did, and the window shows a banner while it is on.
 
 use std::collections::VecDeque;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -96,25 +98,57 @@ impl AstroAccount {
 
 /// Whether to count simulated events, for local testing.
 ///
-/// Read once. An environment variable rather than a setting, because this is a
-/// switch that must never travel to a streaming machine and the one place that
-/// travels is the settings file.
-static ALLOW_MOCK: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+/// A process-wide flag rather than a setting, because this is a switch that must
+/// never travel to a streaming machine inside `settings.toml`. Session-only: it
+/// starts from `YAP_ALLOW_MOCK_EVENTS` and the Setup screen can flip it at
+/// runtime, and it resets on the next launch. An `AtomicBool` (not a `OnceLock`)
+/// so the UI toggle takes effect on the already-running connection — the read
+/// loop checks it per event.
+static ALLOW_MOCK: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Seeds [`ALLOW_MOCK`] from the environment exactly once, so a late UI toggle
+/// is never overwritten by a re-read.
+static MOCK_SEEDED: std::sync::Once = std::sync::Once::new();
 
 /// Whether simulated events are being counted.
 ///
-/// Public so the app can ask at startup, not only when one arrives: the warning
-/// that a build is counting fake cheers is worth reading before a stream rather
-/// than after the first one has been counted.
+/// Public so the app can ask at startup and the window can show a banner, not
+/// only when one arrives: the warning that a build is counting fake cheers is
+/// worth reading before a stream rather than after the first one has been
+/// counted.
 pub fn mock_events_allowed() -> bool {
-    allow_mock_events()
+    seed_mock_flag();
+    ALLOW_MOCK.load(Ordering::SeqCst)
 }
 
-fn allow_mock_events() -> bool {
-    *ALLOW_MOCK.get_or_init(|| {
-        let on = std::env::var("YAP_ALLOW_MOCK_EVENTS").is_ok_and(|v| !v.is_empty() && v != "0");
+/// Flip Test Mode at runtime, from the Setup screen.
+///
+/// Loud when enabling, because the failure this guards against is a test
+/// session that quietly includes fake cheers and is then believed.
+pub fn set_mock_events_allowed(on: bool) {
+    seed_mock_flag();
+    ALLOW_MOCK.store(on, Ordering::SeqCst);
+
+    if on {
+        log::warn!(
+            "astro: Test Mode is on — simulated events will be counted. \
+             Anything they add is labelled (mock) so it can be told apart. \
+             Turn it off before streaming."
+        );
+    }
+}
+
+/// Read `YAP_ALLOW_MOCK_EVENTS` into the flag, once.
+///
+/// Kept apart from the setter so flipping the switch at runtime cannot be
+/// undone by a second read of an environment that has not changed.
+fn seed_mock_flag() {
+    MOCK_SEEDED.call_once(|| {
+        let on =
+            std::env::var("YAP_ALLOW_MOCK_EVENTS").is_ok_and(|v| !v.is_empty() && v != "0");
 
         if on {
+            ALLOW_MOCK.store(true, Ordering::SeqCst);
             // Loud, and on every connect, because the failure this guards
             // against is a test session that quietly includes fake cheers and is
             // then believed.
@@ -124,9 +158,16 @@ fn allow_mock_events() -> bool {
                  Unset it before streaming."
             );
         }
+    });
+}
 
-        on
-    })
+/// Whether one activity reaches pricing.
+///
+/// Pure so the rule is testable without flipping process-wide state: the read
+/// loop calls it with the live flag, and a test calls it with whatever it is
+/// checking.
+fn mock_dropped(is_mock: bool, allowed: bool) -> bool {
+    is_mock && !allowed
 }
 
 /// Event kinds already reported as unpriced.
@@ -352,7 +393,7 @@ impl AstroPlatform {
                         continue;
                     };
 
-                    if activity.is_mock && !allow_mock_events() {
+                    if mock_dropped(activity.is_mock, mock_events_allowed()) {
                         log::debug!(
                             "astro: ignoring a simulated {} event from {}",
                             activity.kind,

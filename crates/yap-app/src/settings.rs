@@ -98,167 +98,152 @@ pub struct Section {
     pub fields: &'static [Field],
 }
 
-const ENGINE: &[Field] = &[
-    Field {
-        key: "engine",
-        label: "Speech recognition",
-        kind: FieldKind::Text,
-        options: &[],
-        help: Some("local whisper.cpp, or groq for a hosted one"),
-    },
-    Field {
-        key: "model_path",
-        label: "Model file",
-        kind: FieldKind::Path,
-        options: &[],
-        help: Some("a ggml model, e.g. ggml-small.en.bin"),
-    },
-    Field {
-        key: "engine_backend",
-        label: "Compute",
-        kind: FieldKind::Text,
-        options: &[],
-        help: Some("needs a GPU-enabled build; CPU works everywhere"),
-    },
-    Field {
-        key: "groq_key",
-        label: "Groq API key",
-        kind: FieldKind::Secret,
-        options: &[],
-        help: None,
-    },
-];
-
-const GOAL: &[Field] = &[
-    Field {
-        key: "default_mode",
-        label: "Default mode",
-        kind: FieldKind::Choice,
-        options: &["extend", "fixed", "time"],
-        help: Some("whether chat can move the finish line"),
-    },
-    Field {
-        key: "default_hard_limit",
-        label: "Hard limit",
-        kind: FieldKind::Int,
-        options: &[],
-        help: Some("the most the goal can climb to; empty for no limit"),
-    },
-];
-
-const COUNTING: &[Field] = &[
-    Field {
-        key: "expand_contractions",
-        label: "Expand contractions",
-        kind: FieldKind::Bool,
-        options: &[],
-        help: Some("count \"don't\" as two words, because it is said as two"),
-    },
-    Field {
-        key: "spell_out_numerals",
-        label: "Spell out numbers",
-        kind: FieldKind::Bool,
-        options: &[],
-        help: Some("count \"42\" as \"forty two\", which is what was said"),
-    },
-    Field {
-        key: "exclude_fillers",
-        label: "Exclude fillers",
-        kind: FieldKind::Bool,
-        options: &[],
-        help: Some("um, uh and the like do not count toward the goal"),
-    },
-    Field {
-        key: "count_bare_numerals",
-        label: "Count bare numerals",
-        kind: FieldKind::Bool,
-        options: &[],
-        help: Some("only applies when spelling out is off"),
-    },
-    Field {
-        key: "keep_transcript",
-        label: "Keep transcript",
-        kind: FieldKind::Bool,
-        options: &[],
-        help: Some("a local record of what was said; off makes counts disputable"),
-    },
-];
-
 const VOICE: &[Field] = &[
     Field {
         key: "input_device",
         label: "Microphone",
         kind: FieldKind::ChoiceFromDevices,
         options: &[],
-        help: Some(
-            "which input to listen to; system default is fine unless you have more than one",
-        ),
+        help: Some("Usually just leave this on System default"),
     },
     Field {
-        key: "vad_min_silence_ms",
-        label: "Pause that ends a thought",
-        kind: FieldKind::Int,
+        key: "model_path",
+        label: "Voice model",
+        kind: FieldKind::Path,
         options: &[],
-        help: Some("milliseconds; lower splits sentences more often"),
+        help: Some("Pick one below — you don't need to type a path"),
     },
     Field {
-        key: "vad_threshold",
-        label: "Speech threshold",
+        key: "engine",
+        label: "Voice engine",
         kind: FieldKind::Text,
         options: &[],
-        help: Some("0.0 to 1.0; lower hears more of the room"),
+        help: Some("Local is free and private. Groq needs internet + a key"),
     },
-];
-
-const TWITCH: &[Field] = &[
     Field {
-        key: "twitch_channel",
-        label: "Channel",
+        key: "engine_backend",
+        label: "Speed",
         kind: FieldKind::Text,
         options: &[],
-        help: Some("empty leaves chat commands as the only way to extend"),
+        help: Some("Auto is fine. Only change this if counting feels slow"),
     },
     Field {
-        key: "twitch_client_id",
-        label: "Application id",
-        kind: FieldKind::Text,
-        options: &[],
-        help: Some("from dev.twitch.tv/console/apps"),
-    },
-    Field {
-        key: "twitch_credential",
-        label: "Token location",
-        kind: FieldKind::Text,
-        options: &[],
-        help: Some("a keyring entry name, not the token itself"),
-    },
-    Field {
-        key: "twitch_token",
-        label: "User token",
+        key: "groq_key",
+        label: "Groq key (only if you use Groq)",
         kind: FieldKind::Secret,
         options: &[],
         help: None,
     },
 ];
 
-const SERVER: &[Field] = &[
+const YAPATHON: &[Field] = &[
+    Field {
+        key: "default_mode",
+        label: "How chat affects the goal",
+        kind: FieldKind::Choice,
+        options: &["extend", "fixed", "time"],
+        help: Some("Extend = chat grows the goal. Fixed = goal never moves. Time = chat adds clock"),
+    },
+    Field {
+        key: "default_hard_limit",
+        label: "Biggest the goal can get",
+        kind: FieldKind::Int,
+        options: &[],
+        help: Some("Safety cap so chat can't grow it forever. Empty = no cap"),
+    },
+    Field {
+        key: "expand_contractions",
+        label: "Count “don't” as 2 words",
+        kind: FieldKind::Bool,
+        options: &[],
+        help: None,
+    },
+    Field {
+        key: "spell_out_numerals",
+        label: "Count “42” as “forty two”",
+        kind: FieldKind::Bool,
+        options: &[],
+        help: None,
+    },
+    Field {
+        key: "exclude_fillers",
+        label: "Ignore ums and uhs",
+        kind: FieldKind::Bool,
+        options: &[],
+        help: None,
+    },
+    Field {
+        key: "count_bare_numerals",
+        label: "Count lone numbers",
+        kind: FieldKind::Bool,
+        options: &[],
+        help: Some("Only matters if spelling-out above is off"),
+    },
+    Field {
+        key: "keep_transcript",
+        label: "Keep what was said",
+        kind: FieldKind::Bool,
+        options: &[],
+        help: Some("Lets you settle disputes later. Stored only on this PC"),
+    },
+];
+
+const CHAT_SETUP: &[Field] = &[
+    Field {
+        key: "twitch_channel",
+        label: "Your Twitch channel",
+        kind: FieldKind::Text,
+        options: &[],
+        help: Some("Empty = chat can't grow the goal yet, talking still counts"),
+    },
+    Field {
+        key: "twitch_client_id",
+        label: "Twitch app ID",
+        kind: FieldKind::Text,
+        options: &[],
+        help: Some("From dev.twitch.tv/console/apps — one-time copy-paste"),
+    },
+    Field {
+        key: "twitch_token",
+        label: "Twitch login",
+        kind: FieldKind::Secret,
+        options: &[],
+        help: None,
+    },
+    Field {
+        key: "astro_youtube_token",
+        label: "YouTube connection",
+        kind: FieldKind::Secret,
+        options: &[],
+        help: Some("Via StreamElements. Empty = YouTube off"),
+    },
+    Field {
+        key: "astro_twitch_token",
+        label: "Twitch via StreamElements",
+        kind: FieldKind::Secret,
+        options: &[],
+        help: Some("Only needed if you stream to both sites at once"),
+    },
+];
+
+const LOOK: &[Field] = &[
     Field {
         key: "accent",
-        label: "Accent colour",
+        label: "Color",
         kind: FieldKind::Choice,
         options: &["teal", "green", "pink", "purple", "amber", "blue", "mono"],
-        help: Some("tints the count and the highlights; applies on next launch"),
+        help: Some("Just the highlight color. Teal is fine"),
     },
     Field {
         key: "appearance",
         label: "Light or dark",
         kind: FieldKind::Choice,
         options: &["auto", "dark", "light"],
-        help: Some("dark unless you ask otherwise"),
+        help: Some("Auto follows your PC"),
     },
     Field {
         key: "overlay_theme",
-        label: "Overlay colours",
+        label: "Overlay colors",
         kind: FieldKind::Choice,
         options: &[
             "card",
@@ -269,34 +254,52 @@ const SERVER: &[Field] = &[
             "catppuccin-mocha",
             "catppuccin-macchiato",
         ],
-        help: Some(
-            "the colour scheme; preview one at a time by adding ?theme=name to the \
-             overlay URL in a browser",
-        ),
+        help: Some("What chat sees on stream"),
     },
     Field {
         key: "overlay_style",
-        label: "Overlay shape",
+        label: "Overlay size",
         kind: FieldKind::Choice,
         options: &["corner", "slim", "strip", "big"],
-        help: Some(
-            "where it sits and how big; any colour works in any shape, and OBS's \
-             own Custom CSS box can override both per Browser Source",
-        ),
+        help: Some("Corner is the safe default"),
+    },
+];
+
+const ADVANCED: &[Field] = &[
+    Field {
+        key: "twitch_credential",
+        label: "Twitch login slot",
+        kind: FieldKind::Text,
+        options: &[],
+        help: Some("Leave this alone unless you run two channels"),
+    },
+    Field {
+        key: "vad_min_silence_ms",
+        label: "Pause length (advanced)",
+        kind: FieldKind::Int,
+        options: &[],
+        help: Some("Lower = splits sentences more. 500 is fine"),
+    },
+    Field {
+        key: "vad_threshold",
+        label: "Mic sensitivity (advanced)",
+        kind: FieldKind::Text,
+        options: &[],
+        help: Some("0 to 1. Lower hears more room noise"),
     },
     Field {
         key: "bind_address",
-        label: "Bind address",
+        label: "Network (advanced)",
         kind: FieldKind::Text,
         options: &[],
-        help: Some("keep this on 127.0.0.1 unless you know why not"),
+        help: Some("Keep 127.0.0.1"),
     },
     Field {
         key: "port",
-        label: "Port",
+        label: "Port (advanced)",
         kind: FieldKind::Int,
         options: &[],
-        help: Some("OBS points at this"),
+        help: Some("OBS points here. Only change if something else uses it"),
     },
 ];
 
@@ -315,196 +318,62 @@ const fn event_field(key: &'static str, label: &'static str, help: &'static str)
     }
 }
 
-/// One platform's worth of event prices.
-///
-/// Empty means "worth nothing", which is different from "unpriced": a blank box
-/// is a decision, and an unpriced event grants nothing either way.
-///
-/// Split per platform rather than one long list. Twenty fields in a single
-/// section is a wall, and the ones that matter are scattered through it — a
-/// streamer enabling YouTube had to hunt past ten Twitch rows to find the Super
-/// Chat, and gave up, which is what made it look like the option did not exist.
-/// Four short sections read as "these are the platforms you can turn on", which
-/// is what they are.
-///
-/// Blank fields cost nothing: they are removed from `event_words` on save rather
-/// than stored as a zero.
-const EVENTS_TWITCH: &[Field] = &[
-    // From either Twitch's own EventSub or Astro. Same prices either way.
-    event_field("event_twitch_follow", "Follower", "each one, flat"),
-    event_field("event_twitch_sub", "New subscriber", "first month, flat"),
-    event_field(
-        "event_twitch_resub",
-        "Resubscribe",
-        "any month after the first",
-    ),
-    event_field(
-        "event_twitch_gift_sub",
-        "Gifted sub (each)",
-        "scales with the size of the gift",
-    ),
-    event_field(
-        "event_twitch_cheer",
-        "Cheer (per bit)",
-        "2500 bits is worth 2500 of these",
-    ),
-    event_field(
-        "event_twitch_raid",
-        "Raid (per raider)",
-        "scales with how many came",
-    ),
-    event_field(
-        "event_twitch_host",
-        "Host (per viewer)",
-        "scales with how many came",
-    ),
-    event_field("event_twitch_redemption", "Redemption", "each one, flat"),
-    event_field(
-        "event_twitch_tip",
-        "Tip (per unit)",
-        "streams without native tips still have these",
-    ),
-    event_field(
-        "event_twitch_merch",
-        "Merch (per unit)",
-        "the basket's total",
-    ),
+/// All chat rewards in one place. Empty = off.
+/// Presets at the top set sane defaults — most people never touch the rest.
+const REWARDS: &[Field] = &[
+    event_field("event_twitch_follow", "Twitch: new follower", "each time"),
+    event_field("event_twitch_sub", "Twitch: new sub", "first month"),
+    event_field("event_twitch_resub", "Twitch: resub", "every month after the first"),
+    event_field("event_twitch_gift_sub", "Twitch: gifted sub (each)", "a 10-pack counts 10x"),
+    event_field("event_twitch_cheer", "Twitch: cheer (per bit)", "1 per bit is normal"),
+    event_field("event_twitch_raid", "Twitch: raid (per person)", "10 raiders = 10x"),
+    event_field("event_twitch_host", "Twitch: host (per viewer)", "same as a raid"),
+    event_field("event_twitch_redemption", "Twitch: channel point redeem", "each one"),
+    event_field("event_twitch_tip", "Twitch: tip (per $1)", "blank if no tips"),
+    event_field("event_twitch_merch", "Twitch: merch buy", "each order"),
+    event_field("event_youtube_subscriber", "YouTube: new subscriber", "needs YouTube connection"),
+    event_field("event_youtube_membership", "YouTube: new member", "paid, not Subscribe"),
+    event_field("event_youtube_superchat", "YouTube: Super Chat (per $1)", "what they paid"),
+    event_field("event_youtube_tip", "YouTube: tip (per $1)", "what they paid"),
+    event_field("event_youtube_merch", "YouTube: merch buy", "each order"),
+    event_field("event_kick_follow", "Kick: new follower", "each one"),
+    event_field("event_kick_sub", "Kick: new sub", "each one"),
+    event_field("event_kick_kicks", "Kick: KICKs gift (each)", "scales with gift"),
+    event_field("event_kick_tip", "Kick: tip (per $1)", "what they paid"),
+    event_field("event_chat_command", "!yap in chat", "each time typed — great for testing"),
 ];
 
-/// YouTube prices. From Astro only — see [Astro](docs/astro.md).
-const EVENTS_YOUTUBE: &[Field] = &[
-    event_field(
-        "event_youtube_subscriber",
-        "Channel subscriber",
-        "someone pressing Subscribe. The YouTube API cannot report this at \
-         all; only Astro can",
-    ),
-    event_field(
-        "event_youtube_membership",
-        "Channel membership",
-        "a paid member joining, which is not the same as subscribing",
-    ),
-    event_field(
-        "event_youtube_superchat",
-        "Super Chat (per unit)",
-        "what was spent. No currency comes with it, so a price in anything \
-         other than the channel's own currency is off by the exchange rate",
-    ),
-    event_field("event_youtube_tip", "Tip (per unit)", "what was spent"),
-    event_field(
-        "event_youtube_merch",
-        "Merch (per unit)",
-        "the basket's total",
-    ),
-];
-
-/// Kick prices. From Astro only.
-const EVENTS_KICK: &[Field] = &[
-    event_field("event_kick_follow", "Follower", "each one, flat"),
-    event_field("event_kick_sub", "Subscriber", "each one, flat"),
-    event_field(
-        "event_kick_kicks",
-        "KICKs gift (each)",
-        "scales with the gift",
-    ),
-    event_field("event_kick_tip", "Tip (per unit)", "what was spent"),
-];
-
-/// Chat prices. Not a platform — this is the local HTTP API and `!yap`.
-const EVENTS_CHAT: &[Field] = &[event_field(
-    "event_chat_command",
-    "Chat !command",
-    "someone typing !yap",
-)];
-
-/// Every setting, grouped.
+/// Every setting, grouped for normal humans: 6 tabs, not 11.
 pub const SETTINGS_SECTIONS: &[Section] = &[
-    Section {
-        title: "Engine",
-        icon: IconName::Cpu,
-        fields: ENGINE,
-    },
-    Section {
-        title: "Events · Twitch",
-        icon: IconName::Heart,
-        fields: EVENTS_TWITCH,
-    },
-    Section {
-        title: "Events · YouTube",
-        icon: IconName::Play,
-        fields: EVENTS_YOUTUBE,
-    },
-    Section {
-        title: "Events · Kick",
-        icon: IconName::Rocket,
-        fields: EVENTS_KICK,
-    },
-    Section {
-        title: "Events · Chat",
-        icon: IconName::MessagesSquare,
-        fields: EVENTS_CHAT,
-    },
-    Section {
-        title: "Goal",
-        icon: IconName::Target,
-        fields: GOAL,
-    },
-    Section {
-        title: "Counting",
-        icon: IconName::Sigma,
-        fields: COUNTING,
-    },
     Section {
         title: "Voice",
         icon: IconName::Mic,
         fields: VOICE,
     },
     Section {
-        title: "Astro",
-        icon: IconName::Orbit,
-        fields: ASTRO,
+        title: "Yapathon",
+        icon: IconName::Target,
+        fields: YAPATHON,
     },
     Section {
-        title: "Twitch",
+        title: "Chat setup",
         icon: IconName::Radio,
-        fields: TWITCH,
+        fields: CHAT_SETUP,
     },
     Section {
-        title: "Server",
-        icon: IconName::Server,
-        fields: SERVER,
+        title: "Rewards",
+        icon: IconName::Gift,
+        fields: REWARDS,
     },
-];
-
-/// StreamElements Astro — a third option, alongside Twitch and YouTube.
-///
-/// One field per platform rather than a list in one field, because one token
-/// really does belong to one platform account and that is the axis a streamer
-/// thinks in. A comma-separated list of opaque strings is worse for a technical
-/// user than a plain field and considerably worse for anyone else.
-///
-/// Adding a platform is a line here and a line in [`credential_entry`], which
-/// is the same bargain every other setting in this schema makes.
-const ASTRO: &[Field] = &[
-    Field {
-        key: "astro_youtube_token",
-        label: "YouTube account",
-        kind: FieldKind::Secret,
-        options: &[],
-        help: Some(
-            "StreamElements dashboard, switched to the YouTube account, copy the JWT. \
-             Empty means that platform is not used",
-        ),
+    Section {
+        title: "On stream",
+        icon: IconName::Palette,
+        fields: LOOK,
     },
-    Field {
-        key: "astro_twitch_token",
-        label: "Twitch account",
-        kind: FieldKind::Secret,
-        options: &[],
-        help: Some(
-            "StreamElements dashboard, switched to the Twitch account, copy the JWT. \
-             Empty means that platform is not used",
-        ),
+    Section {
+        title: "Advanced",
+        icon: IconName::Settings,
+        fields: ADVANCED,
     },
 ];
 

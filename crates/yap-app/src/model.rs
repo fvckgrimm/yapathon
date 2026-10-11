@@ -75,6 +75,20 @@ pub struct SessionModel {
 }
 
 impl SessionModel {
+    /// The full URL OBS's browser source should point at, with both look axes
+    /// pinned so the source is self-describing.
+    ///
+    /// Both `?theme=` and `?style=` beat the server setting (see
+    /// `serve_overlay`), so copying this URL freezes the current look into the
+    /// scene. Pinning only the theme would leave the shape following the app
+    /// setting — changing it later would silently restyle a scene that was
+    /// supposed to be fixed.
+    pub fn overlay_link(&self) -> String {
+        format!(
+            "{}?theme={}&style={}",
+            self.overlay_url, self.overlay_theme, self.overlay_style
+        )
+    }
     /// What to show for the headline number.
     ///
     /// A time run shows a clock, not a word total: what the streamer watches
@@ -395,9 +409,9 @@ impl SessionEntity {
     /// Change the overlay theme and tell the server.
     ///
     /// Both at once, because they have to agree: the window offers a URL with
-    /// the theme in it and the server serves whatever that URL asks for. Setting
-    /// one without the other is how a streamer copies a `?theme=cute` URL and
-    /// gets the default card.
+    /// the theme and style in it and the server serves whatever that URL asks
+    /// for. Setting one without the other is how a streamer copies a
+    /// `?theme=cute` URL and gets the default card.
     pub fn set_overlay_theme(&mut self, theme: &str, cx: &mut gpui::Context<Self>) {
         self.model.overlay_theme = self.state.overlay_theme(Some(theme));
         cx.notify();
@@ -450,6 +464,25 @@ mod tests {
             snapshot: Some(snapshot),
             ..SessionModel::default()
         }
+    }
+
+    #[test]
+    fn the_offered_overlay_url_pins_both_look_axes() {
+        // A Browser Source is created once and sits there. Pinning only the
+        // theme would leave the shape following the app setting, so a later
+        // restyle in Settings would silently change — or appear not to change —
+        // what is on stream.
+        let model = SessionModel {
+            overlay_url: "http://127.0.0.1:8973/overlay".to_string(),
+            overlay_theme: "neon".to_string(),
+            overlay_style: "strip".to_string(),
+            ..SessionModel::default()
+        };
+
+        assert_eq!(
+            model.overlay_link(),
+            "http://127.0.0.1:8973/overlay?theme=neon&style=strip"
+        );
     }
 
     #[test]

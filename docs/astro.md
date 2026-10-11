@@ -46,20 +46,23 @@ native cannot cover.
 
 ### Testing it without viewers
 
-```sh
-YAP_ALLOW_MOCK_EVENTS=1 cargo run --release
-```
+Flip on **Test Mode** in Setup → it counts simulated events so you can check
+the whole chain end to end without waiting for a raid. Then fire test events
+from StreamElements' widget simulator (overlay editor: Designer → Simulate) and
+watch the goal move.
 
 StreamElements' widget simulator produces test events. Counting those would let a
-cheer nobody sent move the goal, so they are normally dropped — this counts them
-anyway, for checking the whole chain end to end without waiting for a raid.
+cheer nobody sent move the goal, so they are normally dropped.
 
 Anything it accepts is labelled `(mock)` in the event feed, so it can never be
-mistaken for something a viewer did. It is an environment variable rather than a
-setting because `settings.toml` is exactly the file that gets synced to a
-streaming machine and pasted into support threads, and it warns at launch.
+mistaken for something a viewer did, and Live shows a banner while Test Mode is
+on. Test Mode is session-only on purpose: it resets on the next launch, because
+`settings.toml` is exactly the file that gets synced to a streaming machine and
+pasted into support threads, and a test switch must never travel in one.
+`YAP_ALLOW_MOCK_EVENTS=1` in the environment still works — it just starts the
+session with Test Mode already on.
 
-**Unset it before streaming.**
+**Turn it off before streaming.**
 
 The payloads were measured against the widget simulator; the connection and the
 full chain — payload to priced event to a goal that moves — have been verified

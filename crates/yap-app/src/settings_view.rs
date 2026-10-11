@@ -30,7 +30,7 @@ use yap_core::goal::GoalMode;
 use crate::settings::{Field, FieldKind, SETTINGS_SECTIONS, is_textual};
 use crate::theme::Theme;
 use crate::view::text::LABEL;
-use crate::view::{label, section_heading};
+use crate::view::label;
 
 /// One editable setting, as the panel holds it.
 ///
@@ -529,7 +529,7 @@ impl SettingsView {
     }
 
     fn render_sections(&self, me: &gpui::WeakEntity<Self>, _cx: &mut App) -> impl IntoElement {
-        div().flex().flex_wrap().gap_2().px_4().pb_3().children(
+        div().flex().flex_wrap().gap_2().children(
             SETTINGS_SECTIONS
                 .iter()
                 .enumerate()
@@ -553,6 +553,101 @@ impl SettingsView {
                     )
                     .into_any_element()
                 }),
+        )
+    }
+
+    /// One-line plain-English description per settings tab.
+    fn section_blurb(&self) -> &'static str {
+        match SETTINGS_SECTIONS
+            .get(self.settings.section)
+            .map(|s| s.title)
+            .unwrap_or("")
+        {
+            "Voice" => "How the app hears you. System default mic + any model below just works.",
+            "Yapathon" => "What a normal run looks like when you press Start.",
+            "Chat setup" => "Optional. Talking already counts — this lets chat grow the goal.",
+            "Rewards" => "What each thing adds. Blank = off. Presets set sane defaults.",
+            "On stream" => "What chat sees on stream. Corner + card is the safe default.",
+            _ => "Only touch these if something is broken.",
+        }
+    }
+
+    /// One-tap reward presets so nobody prices 20 events by hand.
+    fn render_reward_presets(&self, me: &gpui::WeakEntity<Self>, _cx: &mut App) -> Option<gpui::AnyElement> {
+        let is_rewards = SETTINGS_SECTIONS
+            .get(self.settings.section)
+            .is_some_and(|s| s.title == "Rewards");
+        if !is_rewards {
+            return None;
+        }
+
+        let presets: &[(&str, &[(&str, &str)])] = &[
+            ("Off", &[]),
+            (
+                "Chill",
+                &[
+                    ("event_twitch_sub", "100"),
+                    ("event_twitch_resub", "100"),
+                    ("event_twitch_gift_sub", "50"),
+                    ("event_twitch_cheer", "1"),
+                    ("event_twitch_raid", "10"),
+                    ("event_chat_command", "50"),
+                ],
+            ),
+            (
+                "Hype",
+                &[
+                    ("event_twitch_follow", "25"),
+                    ("event_twitch_sub", "150"),
+                    ("event_twitch_resub", "150"),
+                    ("event_twitch_gift_sub", "100"),
+                    ("event_twitch_cheer", "2"),
+                    ("event_twitch_raid", "25"),
+                    ("event_twitch_redemption", "50"),
+                    ("event_chat_command", "100"),
+                    ("event_youtube_superchat", "10"),
+                    ("event_youtube_subscriber", "50"),
+                ],
+            ),
+        ];
+
+        Some(
+            div()
+                .flex()
+                .flex_wrap()
+                .gap_2()
+                .pb_2()
+                .children(presets.iter().map(|(name, values)| {
+                    let me = me.clone();
+                    let values: Vec<(String, String)> = values
+                        .iter()
+                        .map(|(k, v)| (k.to_string(), v.to_string()))
+                        .collect();
+                    let name = name.to_string();
+                    let id = format!("reward-preset-{name}");
+                    Button::new(id)
+                        .label(name.to_string())
+                        .on_click(move |_, _, cx| {
+                            let _ = me.update(cx, |this, _| {
+                                if name == "Off" {
+                                    // Clear every reward field.
+                                    for section in SETTINGS_SECTIONS {
+                                        for field in section.fields {
+                                            if field.key.starts_with("event_") {
+                                                this.settings.set(field.key, String::new());
+                                            }
+                                        }
+                                    }
+                                } else {
+                                    for (k, v) in &values {
+                                        this.settings.set(k, v.clone());
+                                    }
+                                }
+                            });
+                        })
+                        .into_any_element()
+                }))
+                .into_any_element(),
         )
     }
 
@@ -596,24 +691,27 @@ impl SettingsView {
 
         Some(
             div()
+                .p_3()
+                .rounded_lg()
+                .bg(Theme::surface(cx))
+                .border_1()
+                .border_color(Theme::border(cx))
                 .flex()
                 .flex_col()
-                .gap_1()
+                .gap_2()
                 .child(
                     div()
-                        .text_size(LABEL)
-                        .text_color(Theme::text(cx))
-                        .child("models found"),
+                        .text_size(crate::view::text::BODY)
+                        .font_weight(gpui::FontWeight::BOLD)
+                        .child("Voice models on this PC"),
                 )
                 .when(found.is_empty(), |this| {
-                    // Naming the directory matters more than the message: the
-                    // fix is to move a file, and the person needs to know where.
                     this.child(
                         div()
-                            .text_size(px(10.0))
+                            .text_size(LABEL)
                             .text_color(Theme::muted(cx))
                             .child(format!(
-                                "none — put a ggml model in {}",
+                                "None yet. Download one (ggml-*.bin) into {} — or Browse below.",
                                 yap_core::settings::models_dir().display()
                             )),
                     )
@@ -634,9 +732,9 @@ impl SettingsView {
     fn render_browse_button(&self, me: &gpui::WeakEntity<Self>, cx: &mut App) -> impl IntoElement {
         let browsing = self.browsing;
         let label = if browsing {
-            "waiting for the file chooser…"
+            "Waiting for the file picker…"
         } else {
-            "browse for a model file…"
+            "Browse for a model file…"
         };
 
         div()
@@ -685,14 +783,26 @@ impl SettingsView {
                 let control: gpui::AnyElement = match field.kind {
                     FieldKind::Bool => {
                         let me = me.clone();
-                        Switch::new(SharedId::field(key))
-                            .checked(on)
-                            // `on_change` hands the new value as a `&bool`, so
-                            // it needs a deref before it is a bool.
-                            .on_change(move |checked, _window, cx| {
-                                let _ =
-                                    me.update(cx, |this, _cx| this.settings.toggle(key, *checked));
-                            })
+                        div()
+                            .flex()
+                            .items_center()
+                            .justify_between()
+                            .gap_3()
+                            .child(
+                                div()
+                                    .text_size(LABEL)
+                                    .text_color(Theme::muted(cx))
+                                    .child(if on { "On" } else { "Off" }),
+                            )
+                            .child(
+                                Switch::new(SharedId::field(key))
+                                    .checked(on)
+                                    .on_change(move |checked, _window, cx| {
+                                        let _ = me.update(cx, |this, _cx| {
+                                            this.settings.toggle(key, *checked)
+                                        });
+                                    }),
+                            )
                             .into_any_element()
                     }
                     FieldKind::Text | FieldKind::Int | FieldKind::Path => self
@@ -717,14 +827,18 @@ impl SettingsView {
                 };
 
                 div()
+                    .p_3()
+                    .rounded_lg()
+                    .bg(Theme::surface(cx))
+                    .border_1()
+                    .border_color(Theme::border(cx))
                     .flex()
                     .flex_col()
-                    .gap_1()
-                    .py_2()
+                    .gap_2()
                     .child(
                         div()
-                            .text_size(LABEL)
-                            .text_color(Theme::text(cx))
+                            .text_size(crate::view::text::BODY)
+                            .font_weight(gpui::FontWeight::SEMIBOLD)
                             .child(field.label),
                     )
                     .child(control)
@@ -742,7 +856,7 @@ impl SettingsView {
         let hint = field.help.unwrap_or("");
 
         let input = gpui_kit::component::input::Input::new(state)
-            .h(px(28.0))
+            .h(px(32.0))
             .w_full()
             .into_any_element();
 
@@ -755,7 +869,7 @@ impl SettingsView {
                 .when(!hint.is_empty(), |this| {
                     this.child(
                         div()
-                            .text_size(px(10.0))
+                            .text_size(LABEL)
                             .text_color(Theme::muted(cx))
                             .child(hint),
                     )
@@ -873,11 +987,17 @@ impl SettingsView {
             .flex()
             .flex_col()
             .gap_2()
-            .px_4()
-            .py_3()
+            .p_3()
+            .rounded_lg()
+            .bg(Theme::surface(cx))
+            .border_1()
+            .border_color(Theme::border(cx))
             .when(notice.is_some(), |this| {
                 this.child(
                     div()
+                        .p_2()
+                        .rounded_md()
+                        .bg(Theme::bg(cx))
                         .text_size(LABEL)
                         .text_color(if is_error {
                             Theme::danger(cx)
@@ -889,10 +1009,8 @@ impl SettingsView {
             })
             .child(
                 Button::new("save-settings")
-                    .label(if dirty { "Save changes" } else { "Saved" })
+                    .label(if dirty { "Save changes" } else { "All saved ✓" })
                     .primary()
-                    // Disabled until something changes, so looking at Settings
-                    // does not rewrite the file.
                     .disabled(!dirty)
                     .on_click({
                         let me = me.clone();
@@ -903,11 +1021,10 @@ impl SettingsView {
             )
             .child(
                 div()
-                    .text_size(px(10.0))
+                    .text_size(LABEL)
                     .text_color(Theme::muted(cx))
                     .child(
-                        "Engine, model and microphone changes take effect on Save. \
-                         Words spoken while the recogniser reloads are not counted.",
+                        "Voice changes reload the mic on Save — you'll miss a second of talk.",
                     ),
             )
     }
@@ -1262,8 +1379,8 @@ fn parse_bool(raw: &str) -> bool {
 /// shell history — the exact outcome the credential store exists to prevent.
 fn secret_status(state: yap_core::secrets::SecretState) -> (&'static str, bool) {
     match state {
-        yap_core::secrets::SecretState::Present => ("set — stored by this machine", true),
-        yap_core::secrets::SecretState::Absent => ("not set", true),
+        yap_core::secrets::SecretState::Present => ("Connected ✓ — saved on this PC", true),
+        yap_core::secrets::SecretState::Absent => ("Not connected yet", true),
 
         // Locked is its own message because its own command fixes it. Telling
         // someone their machine has no credential store when it is sat right
@@ -1272,7 +1389,7 @@ fn secret_status(state: yap_core::secrets::SecretState) -> (&'static str, bool) 
         yap_core::secrets::SecretState::Locked => ("locked — unlock it, then check again", false),
 
         yap_core::secrets::SecretState::Unavailable => (
-            "no credential store on this machine — this app will not keep it anywhere else",
+            "This PC can't store logins safely — skipping this",
             false,
         ),
     }
@@ -1555,48 +1672,45 @@ impl gpui::Render for SettingsView {
         };
 
         let running = self.model.read(cx).model().snapshot.is_some();
+        let blurb = self.section_blurb().to_string();
+        let reward_presets = self.render_reward_presets(&me, cx);
 
         div()
             .flex()
             .flex_col()
-            .gap_2()
+            .gap_3()
             .min_w_0()
-            // A setting that only takes effect on the next run is worth saying so
-            // while a run is in progress, or a streamer edits the limit, sees no
-            // change, and concludes the setting is broken.
             .when(running, |this| {
                 this.child(
                     div()
+                        .p_3()
+                        .rounded_md()
+                        .bg(Theme::surface(cx))
+                        .border_1()
+                        .border_color(Theme::warning(cx))
                         .text_size(LABEL)
                         .text_color(Theme::warning(cx))
-                        .child("a yapathon is running — changes apply to the next one"),
+                        .child("A run is going — changes apply to the next one"),
                 )
             })
-            .child(section_heading("settings", cx))
             .child(
-                // Which file this is. Two places can hold settings and only one
-                // is in use, so a panel that edits a file the app never reads
-                // is otherwise completely silent about it.
                 div()
-                    .px_4()
-                    .text_size(px(10.0))
+                    .text_size(crate::view::text::TITLE)
+                    .font_weight(gpui::FontWeight::BOLD)
+                    .child("Settings"),
+            )
+            .child(
+                div()
+                    .text_size(LABEL)
                     .text_color(Theme::muted(cx))
-                    .child(format!("saved to {}", self.path.display())),
+                    .child(blurb),
             )
             .child(self.render_sections(&me, cx))
-            // The picker itself, not a stand-in for it.
-            //
-            // This drew an empty `div` in place of the element `picker` holds.
-            // Every other part of the code was correct — the button, the handler,
-            // the async result, the model list, the state it writes to — and all
-            // of it was unreachable, so the section showed a text field and
-            // nothing else. There was no file chooser on screen, and choosing a
-            // model meant typing an absolute path to a 460 MB file.
-            //
-            // Silent in the way this project keeps finding: no error, no log
-            // line, a button that was written, wired and never drawn.
             .when(picker.is_some(), |this| this.child(picker.unwrap()))
-            .child(div().flex().flex_col().px_4().children(fields))
+            .when(reward_presets.is_some(), |this| {
+                this.child(reward_presets.unwrap())
+            })
+            .child(div().flex().flex_col().gap_2().children(fields))
             .child(self.render_footer(&me, cx))
     }
 }
@@ -1616,20 +1730,18 @@ pub fn input_devices() -> Result<Vec<String>, String> {
         .map_err(|error| format!("{error:#}"))
 }
 
-/// The index of the section holding the engine settings.
-///
-/// Found by title rather than written as a constant, because a constant would be
-/// a number that silently points at the wrong section the moment one is inserted.
+/// The index of the section holding the voice + model settings.
 fn engine_section() -> usize {
     SETTINGS_SECTIONS
         .iter()
-        .position(|section| section.title == "Engine")
+        .position(|section| section.title == "Voice")
         .unwrap_or(0)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::model::SessionModel;
     use yap_core::settings::{Settings, default_model_path};
 
     #[test]
@@ -1698,19 +1810,36 @@ mod tests {
         // If the window offered `/overlay` while the server was set to `cute`,
         // a streamer copying the URL would get the default card and conclude
         // the setting did not work.
-        let state = yap_server::AppState::shared();
-        state.set_overlay_theme("mono");
+        // Note: catppuccin-mocha is not a legacy combined name, so the style
+        // we set survives (a legacy theme like "mono" would map to its old
+        // pair and discard an explicitly set style — see `legacy_look`).
+        let state = yap_server::AppState::new();
+        state.set_overlay_theme("catppuccin-mocha");
+        state.set_overlay_style("strip");
 
         let theme = state.overlay_theme(None);
-        assert_eq!(theme, "mono");
+        assert_eq!(theme, "catppuccin-mocha");
+        let style = state.overlay_style(None);
+        assert_eq!(style, "strip");
 
-        let offered = format!("http://127.0.0.1:8973/overlay?theme={theme}",);
+        let offered = SessionModel {
+            overlay_url: "http://127.0.0.1:8973/overlay".to_string(),
+            overlay_theme: theme,
+            overlay_style: style,
+            ..SessionModel::default()
+        }
+        .overlay_link();
 
         // The URL the app hands over is authoritative: asking for that theme
-        // serves it, whatever the setting happens to be later.
+        // and style serves them, whatever the setting happens to be later.
         state.set_overlay_theme("card");
-        assert_eq!(state.overlay_theme(Some("mono")), "mono");
-        assert!(offered.ends_with("?theme=mono"));
+        state.set_overlay_style("corner");
+        assert_eq!(
+            state.overlay_theme(Some("catppuccin-mocha")),
+            "catppuccin-mocha"
+        );
+        assert_eq!(state.overlay_style(Some("strip")), "strip");
+        assert!(offered.ends_with("?theme=catppuccin-mocha&style=strip"));
     }
 
     /// The options the settings panel offers for one field.
@@ -2338,8 +2467,8 @@ mod tests {
         // is renamed the picker silently stops appearing, which is a failure
         // with no error anywhere.
         assert!(
-            SETTINGS_SECTIONS.iter().any(|s| s.title == "Engine"),
-            "the Engine section is what the model picker hangs off"
+            SETTINGS_SECTIONS.iter().any(|s| s.title == "Voice"),
+            "the Voice section is what the model picker hangs off"
         );
     }
 
@@ -2421,12 +2550,12 @@ mod tests {
         let opened = cx.update(|_window, cx| entity.read(cx).settings.section);
         assert_eq!(
             opened, engine,
-            "the panel should open on Engine, and the picker hangs off that section",
+            "the panel should open on Voice, and the picker hangs off that section",
         );
 
         assert!(
             cx.update(|window, _| window.try_find(SharedId::browse_model()).is_some()),
-            "the Engine section offers only a text field — there is no way to pick \
+            "the Voice section offers only a text field — there is no way to pick \
              a model file without typing its absolute path",
         );
     }
@@ -2694,8 +2823,8 @@ mod tests {
             "with no credential store, the app must not offer to accept one",
         );
         assert!(
-            text.contains("will not keep it anywhere else"),
-            "and must say where it is not going, got: {text:?}",
+            text.contains("can't store") || text.contains("safely"),
+            "and must say it won't be kept unsafely, got: {text:?}",
         );
     }
 

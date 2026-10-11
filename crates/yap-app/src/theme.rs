@@ -190,6 +190,15 @@ impl Appearance {
 /// The dock's colours.
 pub struct Theme;
 
+/// Responsive breakpoints, mirroring accerso-gpui's `md:` split.
+///
+/// Below this width the app shows a top tab bar. At or above it, a left
+/// sidebar. The OBS dock is narrow (~560px) so it gets the top bar;
+/// a popped-out window gets the sidebar.
+pub const MOBILE_BREAKPOINT: f32 = 640.0;
+/// Wide sidebar with labels.
+pub const SIDEBAR_W: f32 = 176.0;
+
 impl Theme {
     /// Whether the resolved theme is dark.
     pub fn is_dark(cx: &App) -> bool {

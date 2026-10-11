@@ -453,6 +453,40 @@ fn prices_the_streamer_already_set_are_reused_rather_than_invented() {
 }
 
 #[test]
+fn a_simulated_event_is_dropped_unless_test_mode_is_on() {
+    // The rule the read loop enforces, checked without touching process-wide
+    // state: fakes never reach pricing by default, and Test Mode lets exactly
+    // the fakes through — real events are unaffected either way.
+    assert!(mock_dropped(true, false));
+    assert!(!mock_dropped(true, true));
+    assert!(!mock_dropped(false, false));
+    assert!(!mock_dropped(false, true));
+}
+
+#[test]
+fn the_test_mode_switch_takes_effect_without_a_restart() {
+    // The UI toggle flips this on a running connection, so setting it must be
+    // observable immediately rather than only at the next launch. Restored at
+    // the end: the flag is process-wide and a test that leaves it on would let
+    // fake events through for every test after it.
+    let was = mock_events_allowed();
+
+    set_mock_events_allowed(true);
+    assert!(
+        mock_events_allowed(),
+        "flipping Test Mode on must read back on"
+    );
+
+    set_mock_events_allowed(false);
+    assert!(
+        !mock_events_allowed(),
+        "and flipping it off must read back off"
+    );
+
+    set_mock_events_allowed(was);
+}
+
+#[test]
 fn the_platform_comes_from_the_event_and_not_from_where_the_token_was_saved() {
     // The settings panel offers one slot per platform, which is the axis a
     // streamer thinks in. But a token does not say which platform it covers and

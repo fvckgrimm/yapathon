@@ -363,12 +363,12 @@ fn start_twitch(hub: &Hub) {
 /// One connection per token, because a token is scoped to one platform account
 /// and a cross-streaming streamer has more than one.
 fn start_astro(hub: &Hub) {
-    // Read here rather than lazily on the first simulated event, so the warning
-    // that this build is counting fake cheers appears at launch — where it can
-    // still stop the stream — rather than after one has already been counted.
-    if !yap_events::astro::mock_events_allowed() {
-        return;
-    }
+    // Touch the Test Mode flag here rather than lazily on the first simulated
+    // event, so the warning that this build is counting fake cheers appears at
+    // launch — where it can still stop the stream — rather than after one has
+    // already been counted. Read-only: whether Test Mode is on changes what the
+    // connection *accepts*, never whether it connects.
+    let _ = yap_events::astro::mock_events_allowed();
 
     // Astro names events `<platform>:<kind>`, the same shape EventSub uses, so
     // the prices a streamer already set carry over rather than silently

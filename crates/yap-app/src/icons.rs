@@ -33,15 +33,22 @@ use gpui::{AssetSource, Result, SharedString};
 gpui_kit::assets::icon_assets!(
     YapIcons,
     [
+        CircleAlert,
+        CircleCheck,
+        Copy,
         Cpu,
+        Gift,
         Heart,
+        ListChecks,
         MessagesSquare,
         Mic,
         Orbit,
+        Palette,
         Play,
         Radio,
         Rocket,
         Server,
+        Settings,
         Sigma,
         Target,
     ]
@@ -103,17 +110,17 @@ mod tests {
     /// draws. A test that imported `section.icon()` would be checking that the
     /// schema agrees with itself.
     const NAMED: &[(&str, IconName)] = &[
-        ("Engine", IconName::Cpu),
-        ("Events · Twitch", IconName::Heart),
-        ("Events · YouTube", IconName::Play),
-        ("Events · Kick", IconName::Rocket),
-        ("Events · Chat", IconName::MessagesSquare),
-        ("Goal", IconName::Target),
-        ("Counting", IconName::Sigma),
         ("Voice", IconName::Mic),
-        ("Astro", IconName::Orbit),
-        ("Twitch", IconName::Radio),
-        ("Server", IconName::Server),
+        ("Yapathon", IconName::Target),
+        ("Chat setup", IconName::Radio),
+        ("Rewards", IconName::Gift),
+        ("On stream", IconName::Palette),
+        ("Advanced", IconName::Settings),
+        ("Live", IconName::Radio),
+        ("Setup", IconName::ListChecks),
+        ("Copy", IconName::Copy),
+        ("Done", IconName::CircleCheck),
+        ("Warn", IconName::CircleAlert),
     ];
 
     #[test]

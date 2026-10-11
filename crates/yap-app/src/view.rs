@@ -17,9 +17,11 @@ use gpui::{
     ParentElement as _, Render, StatefulInteractiveElement as _, Styled as _, Window, div, px,
 };
 use gpui_kit::Subscription;
+use gpui_kit::assets::IconName;
 use gpui_kit::component::Disableable as _;
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::input::InputState;
+use gpui_kit::component::switch::Switch;
 
 use yap_core::goal::GoalMode;
 
@@ -29,7 +31,7 @@ use crate::settings_view::SettingsView;
 use crate::theme;
 use crate::theme::Theme;
 use crate::view::style::{StatusTone, tone_for};
-use crate::view::text::{HEADLINE, LABEL, VALUE};
+use crate::view::text::{BODY, HEADLINE, LABEL, TITLE, VALUE};
 
 /// Font sizes, named.
 ///
@@ -40,11 +42,21 @@ pub(crate) mod text {
     use gpui::px;
 
     /// A big number.
-    pub const HEADLINE: gpui::Pixels = px(48.0);
+    pub const HEADLINE: gpui::Pixels = px(52.0);
+    /// Card title.
+    pub const TITLE: gpui::Pixels = px(15.0);
+    /// Normal reading text.
+    pub const BODY: gpui::Pixels = px(13.0);
     /// A figure that needs reading, not scanning.
     pub const VALUE: gpui::Pixels = px(17.0);
     /// Supporting text.
     pub const LABEL: gpui::Pixels = px(12.0);
+}
+
+/// Narrow = top tabs (OBS dock). Wide = left sidebar.
+pub(crate) fn is_narrow(window: &Window) -> bool {
+    let w: f32 = window.viewport_size().width.into();
+    w < crate::theme::MOBILE_BREAKPOINT
 }
 
 /// The window's root.
@@ -72,6 +84,9 @@ pub struct YapView {
     /// indistinguishable from a click handler that is not wired up, which is
     /// exactly the class of bug this file has been fighting.
     copied_url: bool,
+    /// Whether the fiddly stuff (fix count, history) is expanded.
+    /// Collapsed by default so first-timers see Start, not bookkeeping.
+    show_details: bool,
     /// A weak handle to this view, for click handlers.
     ///
     /// Set during construction from the `Context<Self>` that `cx.new` provides,
@@ -117,9 +132,9 @@ impl RunMode {
 
     fn label(self) -> &'static str {
         match self {
-            Self::Extend => "chat extends goal",
-            Self::Fixed => "fixed goal",
-            Self::Time => "chat extends clock",
+            Self::Extend => "Chat grows the goal",
+            Self::Fixed => "Fixed goal",
+            Self::Time => "Timed run",
         }
     }
 
@@ -144,9 +159,9 @@ impl RunMode {
     /// "the goal grows", and picking the wrong one ends a yapathon wrongly.
     fn explain(self) -> &'static str {
         match self {
-            Self::Extend => "every sub, cheer and raid adds words to the goal",
-            Self::Fixed => "the goal never moves; events only add score",
-            Self::Time => "the goal is a clock; events push the finish further away",
+            Self::Extend => "Talk. Subs, cheers & raids push the finish further.",
+            Self::Fixed => "Talk to a number. Chat can't move it.",
+            Self::Time => "Talk against the clock. Chat adds time.",
         }
     }
 
@@ -182,20 +197,31 @@ const CORRECTION_PRESETS: [(i64, &str); 5] = [
     (-100, "\u{2212}100"),
 ];
 
-/// Which panel the window shows.
+/// Which panel the window shows. Three, not two:
+/// Live (the counter), Setup (first-run checklist), Settings (everything else).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Tab {
-    Run,
+pub(crate) enum Tab {
+    Live,
+    Setup,
     Settings,
 }
 
 impl Tab {
-    const ALL: [Tab; 2] = [Tab::Run, Tab::Settings];
+    const ALL: [Tab; 3] = [Tab::Live, Tab::Setup, Tab::Settings];
 
     fn label(self) -> &'static str {
         match self {
-            Tab::Run => "Run",
+            Tab::Live => "Live",
+            Tab::Setup => "Setup",
             Tab::Settings => "Settings",
+        }
+    }
+
+    fn icon(self) -> IconName {
+        match self {
+            Tab::Live => IconName::Radio,
+            Tab::Setup => IconName::ListChecks,
+            Tab::Settings => IconName::Settings,
         }
     }
 }
@@ -205,17 +231,20 @@ impl Tab {
 /// A clock measured in "words" is a confusing thing to type into.
 fn goal_label(mode: RunMode) -> &'static str {
     match mode {
-        RunMode::Time => "Clock (seconds)",
+        RunMode::Time => "How long (seconds)",
         _ => "Goal (words)",
     }
 }
 
 fn limit_label(mode: RunMode) -> &'static str {
     match mode {
-        RunMode::Time => "Max seconds",
-        _ => "Max words",
+        RunMode::Time => "Longest it can run",
+        _ => "Hard stop (words)",
     }
 }
+
+/// Goal presets so nobody has to invent a number.
+const GOAL_PRESETS: [(u32, &str); 3] = [(1_000, "Quick · 1k"), (5_000, "Normal · 5k"), (10_000, "Marathon · 10k")];
 
 impl YapView {
     pub fn new(
@@ -286,10 +315,11 @@ impl YapView {
                 )),
                 session,
                 me,
-                tab: Tab::Run,
+                tab: Tab::Live,
                 form,
                 correction,
                 copied_url: false,
+                show_details: false,
                 _observe,
             }
         })
@@ -297,15 +327,46 @@ impl YapView {
 
     fn render_header(&self, model: &SessionModel, cx: &mut App) -> impl IntoElement {
         let tone = tone_for(model);
-        let unit = format!("{} {}", model.headline_unit(), model.goal_line());
+        let pill = match tone {
+            StatusTone::Running => "● LIVE — counting",
+            StatusTone::Paused => "❚❚ PAUSED",
+            StatusTone::Finished => "✔ DONE",
+            StatusTone::Idle => "○ READY",
+        };
+        let pill_color = match tone {
+            StatusTone::Running => Theme::success(cx),
+            StatusTone::Paused => Theme::warning(cx),
+            StatusTone::Finished => Theme::success(cx),
+            StatusTone::Idle => Theme::muted(cx),
+        };
 
         div()
+            .p_4()
+            .rounded_lg()
+            .bg(Theme::surface(cx))
+            .border_1()
+            .border_color(Theme::border(cx))
             .flex()
             .flex_col()
-            .px_4()
-            .pt_4()
-            .pb_3()
-            .child(label(format!("yap-a-thon · {}", model.status_label()), cx))
+            .gap_2()
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap_2()
+                    .child(
+                        div()
+                            .px_2()
+                            .py_1()
+                            .rounded_full()
+                            .bg(Theme::bg(cx))
+                            .text_size(LABEL)
+                            .font_weight(gpui::FontWeight::BOLD)
+                            .text_color(pill_color)
+                            .child(pill),
+                    )
+                    .child(label(model.goal_line(), cx)),
+            )
             .child(
                 div()
                     .flex()
@@ -318,26 +379,76 @@ impl YapView {
                             .text_color(tone.text(cx))
                             .child(model.headline()),
                     )
-                    .child(label(unit, cx)),
+                    .child(label(model.headline_unit(), cx)),
             )
             .child(progress_bar(model.fraction(), tone, cx))
     }
 
-    /// The Run / Settings switch.
-    ///
-    /// `me` is a weak handle to this view, captured during render, because the
-    /// click handler receives `&mut App` rather than a `Context<Self>`. Weak so a
-    /// button's closure cannot keep the window alive after it closes.
+    /// Top tabs (narrow windows / OBS dock) and sidebar (wide windows) share
+    /// this switch. Icons make it scannable without reading.
     fn render_tabs(&self, me: &gpui::WeakEntity<Self>, _cx: &mut App) -> impl IntoElement {
-        let me = me.clone();
+        use crate::segment::icon_segment_button;
 
-        segmented(
-            Tab::ALL.into_iter().map(|tab| (tab, tab.label())),
-            self.tab,
-            move |tab, cx| {
-                let _ = me.update(cx, |this, _cx| this.tab = tab);
-            },
+        div().flex().flex_wrap().gap_2().children(
+            Tab::ALL.into_iter().map(|tab| {
+                let me = me.clone();
+                icon_segment_button(
+                    format!("nav-{}", tab.label()),
+                    tab.icon(),
+                    tab.label(),
+                    self.tab == tab,
+                    move |_window, cx| {
+                        let _ = me.update(cx, |this, _cx| this.tab = tab);
+                    },
+                )
+                .into_any_element()
+            }),
         )
+    }
+
+    fn render_sidebar(&self, me: &gpui::WeakEntity<Self>, cx: &mut App) -> impl IntoElement {
+        use crate::segment::icon_segment_button;
+
+        div()
+            .w(px(crate::theme::SIDEBAR_W))
+            .flex_shrink_0()
+            .flex()
+            .flex_col()
+            .gap_1()
+            .p_3()
+            .bg(Theme::surface(cx))
+            .border_r_1()
+            .border_color(Theme::border(cx))
+            .child(
+                div()
+                    .pb_3()
+                    .text_size(TITLE)
+                    .font_weight(gpui::FontWeight::BOLD)
+                    .child("yap-a-thon"),
+            )
+            .children(Tab::ALL.into_iter().map(|tab| {
+                let me = me.clone();
+                icon_segment_button(
+                    format!("nav-{}", tab.label()),
+                    tab.icon(),
+                    tab.label(),
+                    self.tab == tab,
+                    move |_window, cx| {
+                        let _ = me.update(cx, |this, _cx| this.tab = tab);
+                    },
+                )
+                .into_any_element()
+            }))
+            .child(
+                div()
+                    .pt_3()
+                    .mt_3()
+                    .border_t_1()
+                    .border_color(Theme::border(cx))
+                    .text_size(px(10.0))
+                    .text_color(Theme::muted(cx))
+                    .child("talk · chat plays along"),
+            )
     }
 
     /// The settings panel.
@@ -355,71 +466,117 @@ impl YapView {
     fn render_stats(&self, model: &SessionModel, cx: &mut App) -> impl IntoElement {
         div()
             .flex()
-            .gap_6()
-            .px_4()
-            .pb_3()
-            .child(stat("to go", model.remaining(), cx))
-            .child(stat("rate", model.rate(), cx))
-            .child(stat("elapsed", model.elapsed(), cx))
-            .child(stat("from chat", model.from_chat(), cx))
-            .child(stat("fillers", model.fillers(), cx))
+            .flex_wrap()
+            .gap_3()
+            .child(stat("Left", model.remaining(), cx))
+            .child(stat("Pace", model.rate(), cx))
+            .child(stat("Time", model.elapsed(), cx))
     }
 
     fn render_notices(&self, model: &SessionModel, cx: &mut App) -> impl IntoElement {
-        let mut row = div().flex().flex_col().gap_1().px_4().pb_3();
+        let mut row = div().flex().flex_col().gap_2();
 
         if let Some(error) = &model.mic_error {
-            row =
-                row.child(label(format!("microphone: {error}"), cx).text_color(Theme::danger(cx)));
+            row = row.child(banner(
+                format!("Mic problem: {error} — open Setup → Voice"),
+                Theme::danger(cx),
+                cx,
+            ));
         }
 
-        // The recogniser falling behind is worth saying out loud. A stale count
-        // presented as current is worse than a visible delay.
         if model.behind {
-            row = row.child(
-                label("catching up — the counter is behind your voice", cx)
-                    .text_color(Theme::warning(cx)),
-            );
+            row = row.child(banner(
+                "Catching up… the number is behind your voice".to_string(),
+                Theme::warning(cx),
+                cx,
+            ));
         }
 
-        // Likewise a capped goal: without this, chat keeps extending a run that
-        // ended by design.
         if model.is_capped() {
-            row = row.child(
-                label("goal capped — no more events can extend it", cx)
-                    .text_color(Theme::danger(cx)),
-            );
+            row = row.child(banner(
+                "Goal is maxed — chat can't grow it further".to_string(),
+                Theme::warning(cx),
+                cx,
+            ));
         }
 
         row
     }
 
     /// Mode, goal and limit — everything needed to start a run.
-    fn render_start_form(&self, _model: &SessionModel, cx: &mut App) -> impl IntoElement {
+    /// Presets first so nobody has to invent a number.
+    fn render_start_form(&self, model: &SessionModel, cx: &mut App) -> impl IntoElement {
+        // Hide the form mid-run: changing the goal mid-count is how wrong
+        // numbers get accepted. Show it when idle/finished.
+        if !model.can_start() {
+            return div()
+                .text_size(LABEL)
+                .text_color(Theme::muted(cx))
+                .child(format!("Running: {} — End it to start a new one", model.goal_line()))
+                .into_any_element();
+        }
+
         let me = self.me.clone();
+        let current_goal = parse_goal(self.form.goal.read(cx).value().as_ref());
 
         let modes = segmented(
             RunMode::ALL
                 .into_iter()
                 .map(|mode| (mode, mode.label().to_string())),
             self.form.mode,
-            move |mode, cx| {
-                let _ = me.update(cx, |this, _cx| this.form.mode = mode);
+            {
+                let me = me.clone();
+                move |mode, cx| {
+                    let _ = me.update(cx, |this, _cx| this.form.mode = mode);
+                }
             },
         );
 
         div()
+            .p_3()
+            .rounded_lg()
+            .bg(Theme::surface(cx))
+            .border_1()
+            .border_color(Theme::border(cx))
             .flex()
             .flex_col()
             .gap_2()
-            .px_4()
-            .pb_3()
+            .child(
+                div()
+                    .text_size(BODY)
+                    .font_weight(gpui::FontWeight::BOLD)
+                    .child("What are we doing?"),
+            )
             .child(modes)
             .child(
                 div()
-                    .text_size(px(10.0))
+                    .text_size(LABEL)
                     .text_color(Theme::muted(cx))
                     .child(self.form.mode.explain()),
+            )
+            .child(
+                div()
+                    .flex()
+                    .flex_wrap()
+                    .gap_2()
+                    .children(GOAL_PRESETS.map(|(num, title)| {
+                        let selected = current_goal == num;
+                        let me = me.clone();
+                        crate::segment::segment_button(
+                            format!("start-preset-{num}"),
+                            title,
+                            selected,
+                            move |window, cx| {
+                                let text = num.to_string();
+                                let _ = me.update(cx, |this, cx| {
+                                    this.form.goal.update(cx, |s, cx| {
+                                        s.set_value(text.clone(), window, cx);
+                                    });
+                                });
+                            },
+                        )
+                        .into_any_element()
+                    })),
             )
             .child(
                 div()
@@ -437,29 +594,26 @@ impl YapView {
                         cx,
                     )),
             )
+            .into_any_element()
     }
 
-    /// The manual correction form.
-    ///
-    /// For the two cases no automatic method covers: a stretch the recogniser
-    /// missed entirely, and one it misheard that should not have counted. Paired
-    /// with Undo for the common case, this is the escape hatch.
+    /// The manual correction form. Hidden behind Details by default.
     fn render_correction_form(&self, model: &SessionModel, cx: &mut App) -> impl IntoElement {
         div()
+            .p_3()
+            .rounded_lg()
+            .bg(Theme::surface(cx))
+            .border_1()
+            .border_color(Theme::border(cx))
             .flex()
             .flex_col()
             .gap_2()
-            .px_4()
-            .pb_4()
-            .child(section_heading("manual correction", cx))
+            .child(section_heading("fix the count", cx))
             .child(
                 div()
-                    .text_size(px(10.0))
+                    .text_size(LABEL)
                     .text_color(Theme::muted(cx))
-                    .child(
-                        "Undo handles one misheard utterance. This is for a stretch that was \
-                         missed, or a correction you want recorded. The note goes in the log.",
-                    ),
+                    .child("Missed something? Tap a number. It goes in the log."),
             )
             // Presets first, because most corrections are round numbers and
             // typing "250" into a field to add 250 is the slowest way to say it.
@@ -489,9 +643,9 @@ impl YapView {
                     }))
                     .child(
                         div()
-                            .text_size(px(10.0))
+                            .text_size(LABEL)
                             .text_color(Theme::muted(cx))
-                            .child("one click, no typing"),
+                            .child("tap to add, no typing"),
                     ),
             )
             .child(
@@ -504,7 +658,7 @@ impl YapView {
                     .child(
                         div().flex().flex_1().min_w(px(120.0)).child(
                             gpui_kit::component::input::Input::new(&self.correction.note)
-                                .h(px(28.0))
+                                .h(px(32.0))
                                 .w_full(),
                         ),
                     ),
@@ -623,68 +777,74 @@ impl YapView {
             }))
     }
 
-    fn render_controls(&self, model: &SessionModel, _cx: &mut Context<Self>) -> impl IntoElement {
+    fn render_controls(&self, model: &SessionModel, _cx: &mut App) -> impl IntoElement {
         let session = self.session.clone();
+
+        // One big primary that says what happens next. Secondaries stay small.
+        let primary: gpui::AnyElement = if model.can_start() {
+            let session = session.clone();
+            let me = self.me.clone();
+            Button::new("start")
+                .label("Start yapathon")
+                .primary()
+                .on_click(move |_, _window, cx| {
+                    let request = me.update(cx, |this, cx| this.form.request(cx)).ok();
+                    if let Some(request) = request {
+                        command(&session, cx, Command::Start(request));
+                    }
+                })
+                .into_any_element()
+        } else if model.can_pause() {
+            let session = session.clone();
+            Button::new("pause")
+                .label("Pause")
+                .primary()
+                .on_click(move |_, _window, cx| command(&session, cx, Command::Pause))
+                .into_any_element()
+        } else if model.can_resume() {
+            let session = session.clone();
+            Button::new("resume")
+                .label("Keep going")
+                .primary()
+                .on_click(move |_, _window, cx| command(&session, cx, Command::Resume))
+                .into_any_element()
+        } else {
+            Button::new("start")
+                .label("Start yapathon")
+                .primary()
+                .disabled(true)
+                .into_any_element()
+        };
 
         div()
             .flex()
-            .flex_wrap()
+            .flex_col()
             .gap_2()
-            .px_4()
-            .pb_4()
+            .child(div().w_full().child(primary))
             .child(
-                Button::new("start")
-                    .label("Start")
-                    .primary()
-                    .disabled(!model.can_start())
-                    .on_click({
-                        let session = session.clone();
-                        let me = self.me.clone();
-                        move |_, _window, cx| {
-                            let request = me.update(cx, |this, cx| this.form.request(cx)).ok();
-
-                            if let Some(request) = request {
-                                command(&session, cx, Command::Start(request));
-                            }
-                        }
-                    }),
-            )
-            .child(
-                Button::new("pause")
-                    .label("Pause")
-                    .disabled(!model.can_pause())
-                    .on_click({
-                        let session = session.clone();
-                        move |_, _window, cx| command(&session, cx, Command::Pause)
-                    }),
-            )
-            .child(
-                Button::new("resume")
-                    .label("Resume")
-                    .disabled(!model.can_resume())
-                    .on_click({
-                        let session = session.clone();
-                        move |_, _window, cx| command(&session, cx, Command::Resume)
-                    }),
-            )
-            .child(
-                Button::new("undo")
-                    .label("Undo last")
-                    .disabled(!model.can_undo())
-                    .on_click({
-                        let session = session.clone();
-                        move |_, _window, cx| command(&session, cx, Command::Undo)
-                    }),
-            )
-            .child(
-                Button::new("end")
-                    .label("End")
-                    .danger()
-                    .disabled(!model.can_start())
-                    .on_click({
-                        let session = session.clone();
-                        move |_, _window, cx| command(&session, cx, Command::End)
-                    }),
+                div()
+                    .flex()
+                    .flex_wrap()
+                    .gap_2()
+                    .child(
+                        Button::new("undo")
+                            .label("Undo last bit")
+                            .disabled(!model.can_undo())
+                            .on_click({
+                                let session = session.clone();
+                                move |_, _window, cx| command(&session, cx, Command::Undo)
+                            }),
+                    )
+                    .child(
+                        Button::new("end")
+                            .label("End")
+                            .danger()
+                            .disabled(!model.can_start() && !model.can_pause() && !model.can_resume() && model.snapshot.is_none())
+                            .on_click({
+                                let session = session.clone();
+                                move |_, _window, cx| command(&session, cx, Command::End)
+                            }),
+                    ),
             )
     }
 
@@ -701,31 +861,39 @@ impl YapView {
                     .map(|user| format!(" — {user}"))
                     .unwrap_or_default();
                 let words = match event.words {
-                    Some(words) => format!("+{words} words"),
-                    // An event with no price still reached the feed; saying "no
-                    // effect" is more honest than hiding it.
-                    None => "no effect".to_string(),
+                    Some(words) => format!("+{words}"),
+                    None => "off".to_string(),
                 };
                 format!("{}:{}{} {words}", event.platform, event.kind, who)
             })
             .collect();
 
         div()
+            .p_3()
+            .rounded_lg()
+            .bg(Theme::surface(cx))
+            .border_1()
+            .border_color(Theme::border(cx))
             .flex()
             .flex_col()
             .gap_2()
-            .child(section_heading("chat events", cx))
+            .child(section_heading("chat did this", cx))
             .child(
                 div()
                     .flex()
                     .flex_col()
                     .gap_1()
                     .max_h(px(180.0))
-                    // `.id(..)` before `.overflow_y_scroll()`: the scroll
-                    // helpers live on `Stateful<E>`, not on `Div`.
                     .id("events-scroll")
                     .overflow_y_scroll()
-                    .when(items.is_empty(), |this| this.child(label("none yet", cx)))
+                    .when(items.is_empty(), |this| {
+                        this.child(
+                            div()
+                                .text_size(BODY)
+                                .text_color(Theme::muted(cx))
+                                .child("Nothing from chat yet. Type !yap in chat to test."),
+                        )
+                    })
                     .children(items.into_iter().map(|line| label(line, cx))),
             )
     }
@@ -765,10 +933,15 @@ impl YapView {
             .collect();
 
         div()
+            .p_3()
+            .rounded_lg()
+            .bg(Theme::surface(cx))
+            .border_1()
+            .border_color(Theme::border(cx))
             .flex()
             .flex_col()
             .gap_2()
-            .child(section_heading("transcript", cx))
+            .child(section_heading("what you said", cx))
             .child(
                 div()
                     .flex()
@@ -778,7 +951,12 @@ impl YapView {
                     .id("transcript-scroll")
                     .overflow_y_scroll()
                     .when(lines.is_empty(), |this| {
-                        this.child(label("nothing said yet", cx))
+                        this.child(
+                            div()
+                                .text_size(BODY)
+                                .text_color(Theme::muted(cx))
+                                .child("Start talking — your words show up here."),
+                        )
                     })
                     .children(lines),
             )
@@ -801,54 +979,50 @@ impl YapView {
             })
     }
 
-    /// What OBS needs to be told, since getting it wrong is the difference
-    /// between a visible overlay and an invisible one.
+    /// What OBS needs: numbered steps + one big copy button.
     fn render_obs_help(&self, model: &SessionModel, cx: &mut App) -> impl IntoElement {
-        // The theme is baked into the URL OBS is given, rather than left to
-        // whatever the app's default happens to be on the day.
-        //
-        // A Browser Source is created once and then just sits there. If the URL
-        // were `/overlay`, changing the theme in settings would silently change
-        // what is on stream — or, worse, appear to do nothing on a machine
-        // where OBS was set up before the setting existed. Putting the chosen
-        // look in the URL makes the source self-describing: this is what the
-        // streamer picked, and copying the settings elsewhere changes it.
-        //
-        // `?theme=` already wins over the saved setting on the server, so no
-        // other change is needed for the URL to be authoritative.
-        let url = format!("{}?theme={}", model.overlay_url, model.overlay_theme);
+        let url = model.overlay_link();
         let copied = self.copied_url;
 
         div()
+            .p_4()
+            .rounded_lg()
+            .bg(Theme::surface(cx))
+            .border_1()
+            .border_color(Theme::border(cx))
             .flex()
             .flex_col()
             .gap_2()
-            .px_4()
-            .py_3()
-            .child(section_heading("obs", cx))
-            .child(label(
-                "Add a Browser Source to your scene with this URL, and size it to your \
-                 scene (480x270 is plenty). It has to be at least as wide as the number.",
-                cx,
-            ))
             .child(
-                // A quiet surface rather than the accent colour.
-                //
-                // The accent is a light cyan and the app's text colour is near
-                // white, so putting one behind the other is pale-on-pale: legible
-                // in a screenshot, unreadable on a real screen against a stream.
-                // The URL is the one thing a streamer types by hand, so it is
-                // also the one thing that must not be the hardest text to read.
                 div()
-                    .id("copy-overlay-url")
-                    .px_2()
-                    .py_1()
+                    .text_size(TITLE)
+                    .font_weight(gpui::FontWeight::BOLD)
+                    .child("Put it on stream"),
+            )
+            .child(
+                div()
+                    .text_size(BODY)
+                    .text_color(Theme::muted(cx))
+                    .child("1 · In OBS: Sources → + → Browser. 2 · Paste this link. 3 · Set size to 480×270."),
+            )
+            .child(
+                div()
+                    .px_3()
+                    .py_2()
                     .rounded_md()
                     .bg(theme::raised(cx))
                     .text_color(Theme::text(cx))
                     .text_size(LABEL)
-                    .cursor(gpui::CursorStyle::PointingHand)
-                    .child(url.clone())
+                    .child(url.clone()),
+            )
+            .child(
+                Button::new("copy-overlay-url")
+                    .label(if copied {
+                        "Copied! Paste it into OBS"
+                    } else {
+                        "Copy overlay link"
+                    })
+                    .primary()
                     .on_click({
                         let url = url.clone();
                         let me = self.me.clone();
@@ -861,29 +1035,14 @@ impl YapView {
                         }
                     }),
             )
-            .child(
-                div()
-                    .text_size(px(10.0))
-                    .text_color(if copied {
-                        Theme::success(cx)
-                    } else {
-                        Theme::muted(cx)
-                    })
-                    .child(if copied {
-                        "copied — paste it into the Browser Source's URL"
-                    } else {
-                        "click the URL to copy it"
-                    }),
-            )
-            .child(
-                div()
-                    .text_size(px(10.0))
-                    .text_color(Theme::muted(cx))
-                    .child(
-                        "If it does not appear, check the source's width and height are \
-                         not zero, and that it is in the scene you are actually streaming.",
-                    ),
-            )
+            .when(copied, |this| {
+                this.child(
+                    div()
+                        .text_size(LABEL)
+                        .text_color(Theme::success(cx))
+                        .child("Done — it's on your clipboard"),
+                )
+            })
     }
 }
 
@@ -940,11 +1099,11 @@ fn numbered_field(label: &str, state: &Entity<InputState>, cx: &mut App) -> impl
         .flex()
         .flex_col()
         .gap_1()
-        .w(px(140.0))
+        .w(px(150.0))
         .child(label_text(label, cx))
         .child(
             gpui_kit::component::input::Input::new(state)
-                .h(px(28.0))
+                .h(px(32.0))
                 .w_full(),
         )
 }
@@ -971,71 +1130,397 @@ impl YapView {
     pub fn settings(&self) -> Option<Entity<SettingsView>> {
         self.settings.clone()
     }
-}
 
-impl Render for YapView {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let model = self.session.read(cx).model().clone();
-
-        // A weak handle to this view, for the tab buttons below.
-        //
-        // `Context::entity` is not available on this snapshot, so the handle is
-        // stored on the struct at construction: `cx.new` gets a `Context<Self>`,
-        // which can be downgraded, and the result is kept for the buttons'
-        // closures to use. Weak rather than strong so a button's closure cannot
-        // keep the window alive after it closes.
+    /// The Live tab: hero + start + OBS, details collapsed by default.
+    fn render_live(&self, model: &SessionModel, cx: &mut App) -> impl IntoElement {
+        let show_details = self.show_details;
         let me = self.me.clone();
 
-        // `min_w_0` on the scrolling column.
-        //
-        // A flex item's default `min-width` is `auto`, so one long URL or a long
-        // transcript line sets the width for the whole column and pushes
-        // everything to its right off the edge of a narrow window. The whole
-        // panel then appears to be missing its controls rather than merely
-        // clipped, which is what makes this look like a layout bug elsewhere.
         div()
-            .size_full()
-            .id("dock-scroll")
-            .overflow_y_scroll()
-            .min_w_0()
-            .bg(Theme::bg(cx))
-            .text_color(Theme::text(cx))
+            .flex()
+            .flex_col()
+            .gap_3()
+            .child(self.render_header(model, cx))
+            .child(self.render_stats(model, cx))
+            .child(self.render_test_mode_banner(cx))
+            .child(self.render_notices(model, cx))
+            .child(self.render_setup_nudge(model, cx))
+            .child(self.render_start_form(model, cx))
+            .child(self.render_controls(model, cx))
+            .child(self.render_obs_help(model, cx))
+            .child(
+                Button::new("toggle-details")
+                    .label(if show_details {
+                        "Hide fixing + history"
+                    } else {
+                        "Fix the count / see history"
+                    })
+                    .on_click(move |_, _, cx| {
+                        let _ = me.update(cx, |this, _| {
+                            this.show_details = !this.show_details;
+                        });
+                    }),
+            )
+            .when(show_details, |this| {
+                this.child(self.render_correction_form(model, cx))
+                    .child(self.render_events(model, cx))
+                    .child(self.render_transcript(model, cx))
+                    .child(self.render_warnings(model, cx))
+            })
+    }
+
+    /// One-line nudge toward Setup when the voice model is missing.
+    fn render_setup_nudge(&self, _model: &SessionModel, cx: &mut App) -> impl IntoElement {
+        let found = yap_core::settings::discover_models();
+        if !found.is_empty() {
+            return div().into_any_element();
+        }
+
+        let me = self.me.clone();
+        div()
+            .p_3()
+            .rounded_lg()
+            .bg(Theme::surface(cx))
+            .border_1()
+            .border_color(Theme::warning(cx))
+            .flex()
+            .flex_col()
+            .gap_2()
+            .child(
+                div()
+                    .text_size(TITLE)
+                    .font_weight(gpui::FontWeight::BOLD)
+                    .child("No voice model yet — 2 minutes"),
+            )
+            .child(
+                div()
+                    .text_size(BODY)
+                    .text_color(Theme::muted(cx))
+                    .child("The counter can't hear you without one. Setup walks you through it."),
+            )
+            .child(
+                Button::new("go-to-setup")
+                    .label("Open Setup")
+                    .primary()
+                    .on_click(move |_, _, cx| {
+                        let _ = me.update(cx, |this, _| this.tab = Tab::Setup);
+                    }),
+            )
+            .into_any_element()
+    }
+
+    /// Setup checklist: 4 cards, each with a status + one button.
+    /// No reading required — every red row tells you what to press.
+    fn render_setup(&self, cx: &mut App) -> impl IntoElement {
+        let me = self.me.clone();
+        let models = yap_core::settings::discover_models();
+        let model_ok = !models.is_empty();
+        let model_line = if model_ok {
+            format!("Found {} — you're good", models[0].name())
+        } else {
+            format!(
+                "None found in {} — pick one below",
+                yap_core::settings::models_dir().display()
+            )
+        };
+
+        let mic_list = crate::settings_view::input_devices();
+        let (mic_ok, mic_line) = match &mic_list {
+            Ok(devices) if !devices.is_empty() => (
+                true,
+                format!("{} mic(s) ready — System default is fine", devices.len()),
+            ),
+            Ok(_) => (true, "System default mic ready".to_string()),
+            Err(e) => (false, format!("Can't list mics: {e}")),
+        };
+
+        let goal_text = self.form.goal.read(cx).value().to_string();
+        let goal_num = parse_goal(&goal_text);
+
+        div()
+            .flex()
+            .flex_col()
+            .gap_3()
+            .child(
+                div()
+                    .text_size(TITLE)
+                    .font_weight(gpui::FontWeight::BOLD)
+                    .child("Get ready in 4 steps"),
+            )
+            .child(
+                div()
+                    .text_size(BODY)
+                    .text_color(Theme::muted(cx))
+                    .child("Do 1–3, press Start. Step 4 is optional."),
+            )
+            .child(setup_card(
+                "1 · Voice model",
+                &model_line,
+                model_ok,
+                "Pick a model",
+                {
+                    let me = me.clone();
+                    move |_, _, cx| {
+                        let _ = me.update(cx, |this, _| this.tab = Tab::Settings);
+                    }
+                },
+                cx,
+            ))
+            .child(setup_card(
+                "2 · Microphone",
+                &mic_line,
+                mic_ok,
+                "Check mics",
+                {
+                    let me = me.clone();
+                    move |_, _, cx| {
+                        let _ = me.update(cx, |this, _| this.tab = Tab::Settings);
+                    }
+                },
+                cx,
+            ))
+            .child(self.render_goal_step(goal_num, cx))
+            .child(setup_card(
+                "4 · Chat (optional)",
+                "Talking already counts. Add Twitch/YouTube later to let chat grow the goal.",
+                true,
+                "Connect chat",
+                {
+                    let me = me.clone();
+                    move |_, _, cx| {
+                        let _ = me.update(cx, |this, _| this.tab = Tab::Settings);
+                    }
+                },
+                cx,
+            ))
+            .child(self.render_test_mode(cx))
+    }
+
+    /// Test Mode: flip on, fire fake events from the StreamElements simulator,
+    /// watch the goal move. Session-only — it resets on the next launch so it
+    /// can never travel to a streaming machine inside `settings.toml`.
+    fn render_test_mode(&self, cx: &mut App) -> impl IntoElement {
+        let on = yap_events::astro::mock_events_allowed();
+        let me = self.me.clone();
+
+        div()
+            .p_3()
+            .rounded_lg()
+            .bg(Theme::surface(cx))
+            .border_1()
+            .border_color(if on {
+                Theme::warning(cx)
+            } else {
+                Theme::border(cx)
+            })
+            .flex()
+            .flex_col()
+            .gap_2()
             .child(
                 div()
                     .flex()
-                    .flex_col()
-                    .gap_4()
-                    .min_w_0()
-                    .p_4()
-                    .child(self.render_tabs(&me, cx))
-                    .when(self.tab == Tab::Run, |this| {
-                        this.child(
-                            div()
-                                .flex()
-                                .flex_col()
-                                .gap_4()
-                                .child(self.render_header(&model, cx))
-                                .child(self.render_stats(&model, cx))
-                                .child(self.render_notices(&model, cx))
-                                .child(self.render_start_form(&model, cx))
-                                .child(self.render_controls(&model, cx))
-                                .child(self.render_correction_form(&model, cx))
-                                .child(self.render_events(&model, cx))
-                                .child(self.render_transcript(&model, cx))
-                                .child(self.render_warnings(&model, cx))
-                                .child(self.render_obs_help(&model, cx)),
-                        )
-                    })
-                    .when(self.tab == Tab::Settings, |this| {
-                        // The panel is its own entity, so it renders itself and
-                        // keeps whatever was typed into it across redraws.
-                        if let Some(panel) = self.render_settings(cx) {
-                            this.child(panel)
-                        } else {
-                            this.child(label("settings unavailable", cx))
-                        }
+                    .items_center()
+                    .justify_between()
+                    .gap_3()
+                    .child(
+                        div()
+                            .text_size(BODY)
+                            .font_weight(gpui::FontWeight::BOLD)
+                            .child("Test mode — try fake events"),
+                    )
+                    .child(
+                        Switch::new("test-mode-switch").checked(on).on_change(
+                            move |checked, _window, cx| {
+                                yap_events::astro::set_mock_events_allowed(*checked);
+                                let _ = me.update(cx, |_, cx| cx.notify());
+                            },
+                        ),
+                    ),
+            )
+            .child(
+                div()
+                    .text_size(LABEL)
+                    .text_color(Theme::muted(cx))
+                    .child(if on {
+                        "ON — fakes count. In StreamElements, open the simulator \
+                         (overlay editor: Designer → Simulate) and fire a test cheer \
+                         or sub. Fakes show as (mock). Turn this OFF before the real stream."
+                    } else {
+                        "Flip this on, fire a test cheer or sub from StreamElements, \
+                         and watch the goal move. Nothing fake counts while this is off."
                     }),
             )
+            .into_any_element()
+    }
+
+    /// Persistent banner on Live while Test Mode is on. The failure this guards
+    /// against is a test session that quietly includes fake cheers and is then
+    /// believed — so it sits above everything, not in the collapsed details.
+    fn render_test_mode_banner(&self, cx: &mut App) -> impl IntoElement {
+        if !yap_events::astro::mock_events_allowed() {
+            return div().into_any_element();
+        }
+
+        div()
+            .id("test-mode-banner")
+            // Observable in headless tests: `try_find` only sees interactive
+            // elements, and a banner with no click handler is not one.
+            .debug_selector(|| "test-mode-banner".into())
+            .p_3()
+            .rounded_md()
+            .bg(Theme::surface(cx))
+            .border_1()
+            .border_color(Theme::warning(cx))
+            .text_size(BODY)
+            .text_color(Theme::warning(cx))
+            .child("TEST MODE is on — fake events count as (mock). Turn it off before streaming.")
+            .into_any_element()
+    }
+
+    /// Step 3: goal presets + custom field, inline so nobody opens Settings.
+    fn render_goal_step(&self, current: u32, cx: &mut App) -> impl IntoElement {
+        let me = self.me.clone();
+        div()
+            .p_3()
+            .rounded_lg()
+            .bg(Theme::surface(cx))
+            .border_1()
+            .border_color(Theme::border(cx))
+            .flex()
+            .flex_col()
+            .gap_2()
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap_2()
+                    .child(status_dot(true, cx))
+                    .child(
+                        div()
+                            .text_size(BODY)
+                            .font_weight(gpui::FontWeight::BOLD)
+                            .child(format!("3 · Goal — {current} words")),
+                    ),
+            )
+            .child(
+                div()
+                    .text_size(LABEL)
+                    .text_color(Theme::muted(cx))
+                    .child("How much you have to say. Pick one:"),
+            )
+            .child(
+                div()
+                    .flex()
+                    .flex_wrap()
+                    .gap_2()
+                    .children(GOAL_PRESETS.map(|(num, title)| {
+                        let selected = current == num;
+                        let me = me.clone();
+                        crate::segment::segment_button(
+                            format!("goal-preset-{num}"),
+                            title,
+                            selected,
+                            move |window, cx| {
+                                let text = num.to_string();
+                                let _ = me.update(cx, |this, cx| {
+                                    this.form.goal.update(cx, |s, cx| {
+                                        s.set_value(text.clone(), window, cx);
+                                    });
+                                });
+                            },
+                        )
+                        .into_any_element()
+                    })),
+            )
+    }
+}
+
+impl Render for YapView {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let model = self.session.read(cx).model().clone();
+        let me = self.me.clone();
+        let narrow = is_narrow(window);
+
+        // Two branches need their own scroll div — a Div can't move into two
+        // closures, so each branch builds its own.
+        let content_live = div()
+            .flex_1()
+            .min_w_0()
+            .min_h_0()
+            .flex()
+            .flex_col()
+            .gap_3()
+            .p_4()
+            .when(self.tab == Tab::Live, |this| {
+                this.child(self.render_live(&model, cx))
+            })
+            .when(self.tab == Tab::Setup, |this| {
+                this.child(self.render_setup(cx))
+            })
+            .when(self.tab == Tab::Settings, |this| {
+                if let Some(panel) = self.render_settings(cx) {
+                    this.child(panel)
+                } else {
+                    this.child(label("settings unavailable", cx))
+                }
+            });
+
+        let content_wide = div()
+            .flex_1()
+            .min_w_0()
+            .min_h_0()
+            .flex()
+            .flex_col()
+            .gap_3()
+            .p_4()
+            .when(self.tab == Tab::Live, |this| {
+                this.child(self.render_live(&model, cx))
+            })
+            .when(self.tab == Tab::Setup, |this| {
+                this.child(self.render_setup(cx))
+            })
+            .when(self.tab == Tab::Settings, |this| {
+                if let Some(panel) = self.render_settings(cx) {
+                    this.child(panel)
+                } else {
+                    this.child(label("settings unavailable", cx))
+                }
+            });
+
+        div()
+            .size_full()
+            .bg(Theme::bg(cx))
+            .text_color(Theme::text(cx))
+            .flex()
+            .flex_col()
+            .when(narrow, |this| {
+                this.child(
+                    div()
+                        .p_3()
+                        .pb_0()
+                        .child(self.render_tabs(&me, cx)),
+                )
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .min_h_0()
+                        .id("dock-scroll")
+                        .overflow_y_scroll()
+                        .child(content_live),
+                )
+            })
+            .when(!narrow, |this| {
+                this.flex_row().child(self.render_sidebar(&me, cx)).child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .min_h_0()
+                        .id("dock-scroll")
+                        .overflow_y_scroll()
+                        .child(content_wide),
+                )
+            })
     }
 }
 
@@ -1177,12 +1662,12 @@ fn progress_bar(fraction: f32, tone: StatusTone, cx: &mut App) -> impl IntoEleme
     let ratio = fraction.clamp(0.0, 1.0);
 
     div()
-        .h(px(6.0))
+        .h(px(8.0))
         .mt_2()
         .w_full()
         .rounded_full()
         .overflow_hidden()
-        .bg(Theme::muted(cx))
+        .bg(Theme::border(cx))
         .child(
             // A relative width, because the track is whatever the window happens
             // to be and a fixed pixel width would not track it.
@@ -1231,6 +1716,72 @@ pub(crate) fn section_heading(text: &str, cx: &mut App) -> impl IntoElement {
         .font_weight(gpui::FontWeight::BOLD)
         .text_color(Theme::muted(cx))
         .child(text.to_uppercase())
+}
+
+/// Green / amber dot for checklist rows.
+fn status_dot(ok: bool, cx: &mut App) -> impl IntoElement {
+    div()
+        .size(px(10.0))
+        .flex_shrink_0()
+        .rounded_full()
+        .bg(if ok {
+            Theme::success(cx)
+        } else {
+            Theme::warning(cx)
+        })
+}
+
+/// Notice banner: colored left edge, readable at a glance.
+fn banner(text: String, color: gpui::Hsla, cx: &mut App) -> impl IntoElement {
+    div()
+        .p_3()
+        .rounded_md()
+        .bg(Theme::surface(cx))
+        .border_1()
+        .border_color(color)
+        .text_size(BODY)
+        .text_color(Theme::text(cx))
+        .child(text)
+}
+
+/// One setup checklist card.
+fn setup_card(
+    title: &str,
+    body: &str,
+    ok: bool,
+    button: &str,
+    on_click: impl Fn(&gpui::ClickEvent, &mut Window, &mut App) + 'static,
+    cx: &mut App,
+) -> impl IntoElement {
+    div()
+        .p_3()
+        .rounded_lg()
+        .bg(Theme::surface(cx))
+        .border_1()
+        .border_color(Theme::border(cx))
+        .flex()
+        .flex_col()
+        .gap_2()
+        .child(
+            div()
+                .flex()
+                .items_center()
+                .gap_2()
+                .child(status_dot(ok, cx))
+                .child(
+                    div()
+                        .text_size(BODY)
+                        .font_weight(gpui::FontWeight::BOLD)
+                        .child(title.to_string()),
+                ),
+        )
+        .child(
+            div()
+                .text_size(LABEL)
+                .text_color(Theme::muted(cx))
+                .child(body.to_string()),
+        )
+        .child(Button::new(format!("setup-{title}")).label(button).on_click(on_click))
 }
 
 /// Colour, and the mapping from status to tone.
@@ -1414,9 +1965,9 @@ mod tests {
         // Reads go through `update` because a `VisualTestContext` is not an
         // `&App`; it only becomes one inside the closure.
         let tab = cx.update(|_window, cx| root.read(cx).view.read(cx).tab);
-        assert_eq!(tab, Tab::Run, "starts on the run tab");
+        assert_eq!(tab, Tab::Live, "starts on the live tab");
 
-        cx.update(|window, cx| window.click("segment-Settings", cx));
+        cx.update(|window, cx| window.click("nav-Settings", cx));
         cx.update(|window, cx| window.draw(cx).clear(cx));
 
         let tab = cx.update(|_window, cx| root.read(cx).view.read(cx).tab);
@@ -1443,6 +1994,69 @@ mod tests {
     }
 
     #[gpui_kit::test]
+    fn the_test_mode_switch_counts_fakes_and_says_so(cx: &mut gpui_kit::TestAppContext) {
+        // The whole point of Test Mode: one flip, fake events count, and the
+        // window says so where a streamer cannot miss it. Clicks the real
+        // switch rather than calling the setter, because a switch that draws
+        // correctly and does nothing is this project's recurring bug.
+        use gpui_kit::test::TestWindowExt as _;
+
+        // The flag is process-wide; restore it so no later test inherits it.
+        struct Restore(bool);
+        impl Drop for Restore {
+            fn drop(&mut self) {
+                yap_events::astro::set_mock_events_allowed(self.0);
+            }
+        }
+        let _restore = Restore(yap_events::astro::mock_events_allowed());
+        yap_events::astro::set_mock_events_allowed(false);
+
+        let (root, cx) = open_window!(cx);
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        cx.update(|window, cx| window.click("nav-Setup", cx));
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+
+        let tab = cx.update(|_window, cx| root.read(cx).view.read(cx).tab);
+        assert_eq!(tab, Tab::Setup);
+
+        cx.update(|window, cx| window.click("test-mode-switch", cx));
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+
+        assert!(
+            yap_events::astro::mock_events_allowed(),
+            "flipping the switch must enable Test Mode",
+        );
+
+        // And the banner is on screen, on Live — not buried in the details.
+        cx.update(|window, cx| window.click("nav-Live", cx));
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+
+        assert!(
+            cx.debug_bounds("test-mode-banner").is_some(),
+            "Test Mode on must show a banner on Live",
+        );
+
+        // Flipping it back off removes the banner again.
+        cx.update(|window, cx| window.click("nav-Setup", cx));
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        cx.update(|window, cx| window.click("test-mode-switch", cx));
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+
+        assert!(
+            !yap_events::astro::mock_events_allowed(),
+            "flipping the switch again must disable Test Mode",
+        );
+
+        cx.update(|window, cx| window.click("nav-Live", cx));
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+
+        assert!(
+            cx.debug_bounds("test-mode-banner").is_none(),
+            "Test Mode off must remove the banner",
+        );
+    }
+
+    #[gpui_kit::test]
     fn every_settings_section_can_be_switched_to(cx: &mut gpui_kit::TestAppContext) {
         // Every section button had the same dead-click bug as the tab, so the
         // panel could only ever show whichever section it happened to open on.
@@ -1450,7 +2064,7 @@ mod tests {
 
         let (root, cx) = open_window!(cx);
         cx.update(|window, cx| window.draw(cx).clear(cx));
-        cx.update(|window, cx| window.click("segment-Settings", cx));
+        cx.update(|window, cx| window.click("nav-Settings", cx));
         cx.update(|window, cx| window.draw(cx).clear(cx));
 
         let sections = crate::settings::SETTINGS_SECTIONS.len();
@@ -1499,7 +2113,7 @@ mod tests {
 
         let (root, cx) = open_window!(cx);
         cx.update(|window, cx| window.draw(cx).clear(cx));
-        cx.update(|window, cx| window.click("segment-Settings", cx));
+        cx.update(|window, cx| window.click("nav-Settings", cx));
         cx.update(|window, cx| window.draw(cx).clear(cx));
 
         // Find the section holding a credential, so this does not depend on
