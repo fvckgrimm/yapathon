@@ -530,8 +530,17 @@ Two things it does not do, deliberately:
 - **No duplicate counting.** Activities are deduplicated by `activityId`, so a
   reconnect cannot count one cheer twice.
 
-Still unverified against real traffic — everything measured so far came from the
-widget simulator. See [`tools/astro-probe`](tools/astro-probe/README.md).
+**Astro and native Twitch cannot both count Twitch.** Both report
+`twitch:cheer` with the same bits into the same sink, so a streamer who left both
+configured would watch the goal climb at double speed with nothing wrong on
+screen. Where a platform is covered by both, native wins and Astro says so in the
+log and as a warning in the window — clear the native Twitch settings to hand
+that platform to Astro instead. Astro is still worth adding for the platforms
+native cannot cover.
+
+The payloads were measured against the widget simulator, not real traffic; see
+[`tools/astro-probe`](tools/astro-probe/README.md). The connection itself has
+been verified live.
 
 ### Chat commands
 

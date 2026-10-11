@@ -65,8 +65,25 @@ const MAX_BACKOFF: Duration = Duration::from_secs(60);
 pub struct AstroAccount {
     /// The channel JWT, copied from the StreamElements dashboard.
     pub token: String,
-    /// For logs only — which platform this token is scoped to.
-    pub label: String,
+    /// Which platform this token was configured under.
+    ///
+    /// A label, never a claim. Which platform an event is *priced* under comes
+    /// from the event's own `provider` field, not from here — a token in the
+    /// wrong slot still works. What this is for is deciding which platform a
+    /// second connection would duplicate, and for naming the account in a log.
+    pub platform: &'static str,
+}
+
+impl AstroAccount {
+    /// The account's name, for logs.
+    pub fn label(&self) -> &'static str {
+        match self.platform {
+            "youtube" => "YouTube",
+            "twitch" => "Twitch",
+            "kick" => "Kick",
+            _ => "unknown",
+        }
+    }
 }
 
 /// How many activity ids to remember for deduplication.
@@ -160,7 +177,7 @@ impl AstroPlatform {
             ));
         }
 
-        log::info!("astro connected for {}", account.label);
+        log::info!("astro connected for {}", account.label());
 
         let mut subscribed = false;
         let mut nonce = 0u32;
@@ -214,7 +231,7 @@ impl AstroPlatform {
                         .await
                         .context("subscribing to astro")?;
 
-                    log::info!("astro: subscribed to {TOPIC} for {}", account.label);
+                    log::info!("astro: subscribed to {TOPIC} for {}", account.label());
                 }
 
                 "response" => {
@@ -266,13 +283,13 @@ impl AstroPlatform {
                         if seen_provider.is_some() {
                             log::warn!(
                                 "astro: the {} account is also reporting {} events",
-                                account.label,
+                                account.label(),
                                 activity.provider
                             );
                         }
                         log::info!(
                             "astro: {} is receiving {} events",
-                            account.label,
+                            account.label(),
                             activity.provider
                         );
                         seen_provider = Some(activity.provider.to_string());
@@ -454,7 +471,7 @@ impl AstroPlatform {
             match self.connect_once(account, sink.clone()).await {
                 Ok(()) => backoff = RECONNECT_DELAY,
                 Err(error) => {
-                    log::warn!("astro ({}): {error:#}", account.label);
+                    log::warn!("astro ({}): {error:#}", account.label());
                     backoff = (backoff * 2).min(MAX_BACKOFF);
                 }
             }

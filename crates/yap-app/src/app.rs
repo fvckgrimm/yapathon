@@ -246,7 +246,23 @@ fn start_twitch(hub: &Hub) {
 /// One connection per token, because a token is scoped to one platform account
 /// and a cross-streaming streamer has more than one.
 fn start_astro(hub: &Hub) {
-    let accounts = astro_accounts();
+    let sources = reconcile_sources(astro_accounts(), native_twitch_configured(hub.settings()));
+
+    for platform in &sources.dropped {
+        // Named precisely, because "something was ignored" is the kind of
+        // message that gets read once and then not again.
+        log::warn!(
+            "astro: not connecting the {platform} account — twitch is also set up \
+             natively, and running both would count every cheer, sub and raid twice. \
+             Clear the native Twitch settings to use Astro for {platform} instead"
+        );
+        hub.report(ModelMessage::Warning(format!(
+            "{platform}: native Twitch is configured, so Astro is not connecting it too — \
+             running both would count events twice"
+        )));
+    }
+
+    let accounts = sources.kept;
     if accounts.is_empty() {
         return;
     }
@@ -290,7 +306,7 @@ pub fn astro_accounts() -> Vec<AstroAccount> {
     // A missing keyring is not an error. It means this machine cannot store a
     // credential, so there is nothing to connect with — the same reasoning that
     // stops the settings panel offering to accept a token it cannot keep.
-    for (platform, label) in [("youtube", "YouTube"), ("twitch", "Twitch")] {
+    for platform in ["youtube", "twitch"] {
         // No token means that platform is simply not used.
         let Ok(Some(token)) = yap_core::secrets::get(&service, platform) else {
             continue;
@@ -303,11 +319,61 @@ pub fn astro_accounts() -> Vec<AstroAccount> {
 
         accounts.push(AstroAccount {
             token: token.to_string(),
-            label: label.to_string(),
+            platform,
         });
     }
 
     accounts
+}
+
+/// Whether the native Twitch connection is configured.
+///
+/// All three settings or none, which is what `start_twitch` requires and what
+/// this mirrors.
+pub fn native_twitch_configured(settings: &yap_core::settings::Settings) -> bool {
+    settings.twitch_channel.is_some()
+        && settings.twitch_credential.is_some()
+        && settings.twitch_client_id.is_some()
+}
+
+/// The result of deciding which sources may run at once.
+#[derive(Debug, Default)]
+pub struct Sources {
+    /// Accounts to connect.
+    pub kept: Vec<AstroAccount>,
+    /// Platforms dropped, because a native connection already covers them.
+    pub dropped: Vec<&'static str>,
+}
+
+/// Decide which Astro accounts may run alongside native connections.
+///
+/// A platform covered by both is a platform counted twice. Native EventSub and
+/// Astro both report `twitch:cheer` with the same bits, both reach the same
+/// `StateEventSink`, and nothing downstream can tell them apart — so a streamer
+/// who left both configured would watch their goal climb at double speed with
+/// nothing wrong on screen. That is the worst kind of bug this project has:
+/// no error, no warning, just a number that is wrong.
+///
+/// Native wins, for a streamer cross-streaming: EventSub is direct from Twitch
+/// and already configured, while Astro is worth adding for the platform native
+/// cannot cover. Someone who wants Astro for everything simply clears the native
+/// settings, which is one field each.
+///
+/// Pure, so it can be tested — the alternative is a rule that only exists in a
+/// branch nobody exercises.
+pub fn reconcile_sources(accounts: Vec<AstroAccount>, native_twitch: bool) -> Sources {
+    let mut kept = Vec::new();
+    let mut dropped = Vec::new();
+
+    for account in accounts {
+        if account.platform == "twitch" && native_twitch {
+            dropped.push("twitch");
+        } else {
+            kept.push(account);
+        }
+    }
+
+    Sources { kept, dropped }
 }
 
 /// The pricing Twitch events are awarded with.
@@ -678,5 +744,133 @@ mod tests {
             .expect("bind");
         assert!(server.address().ip().is_loopback());
         assert_eq!(server.address().port(), settings.port);
+    }
+
+    #[test]
+    fn a_platform_covered_twice_is_connected_once() {
+        // The bug: nothing stopped both connections running. Native EventSub and
+        // Astro both report `twitch:cheer` with the same bits, both reach the
+        // same sink, and nothing downstream can tell them apart — so the goal
+        // would climb at double speed with no error and nothing wrong on
+        // screen. The worst kind of bug, because it is invisible and it is a
+        // number.
+        let accounts = vec![
+            AstroAccount {
+                token: "t".into(),
+                platform: "twitch",
+            },
+            AstroAccount {
+                token: "y".into(),
+                platform: "youtube",
+            },
+        ];
+
+        // Both configured: Twitch is already covered natively.
+        let both = reconcile_sources(accounts.clone(), true);
+
+        assert_eq!(
+            both.kept.iter().map(|a| a.platform).collect::<Vec<_>>(),
+            vec!["youtube"],
+            "youtube is not covered natively, so it must still connect",
+        );
+        assert_eq!(
+            both.dropped,
+            vec!["twitch"],
+            "twitch would have been counted twice"
+        );
+
+        // Native not configured: nothing to conflict with.
+        let alone = reconcile_sources(accounts.clone(), false);
+        assert_eq!(alone.kept.len(), 2, "both platforms connect");
+        assert!(alone.dropped.is_empty());
+    }
+
+    #[test]
+    fn dropping_a_platform_is_a_connection_decision_not_a_deletion() {
+        // `reconcile_sources` takes the accounts by value and hands back the
+        // ones it did not use. It must not delete anything: a streamer who
+        // clears the native Twitch settings to resolve a conflict should find
+        // their Astro token still there next launch, not have to copy it again.
+        //
+        // Tested on the returned accounts rather than by reading the keyring,
+        // because a test that reads a real store is a test that depends on what
+        // happens to be configured on the machine running it.
+        let accounts = vec![
+            AstroAccount {
+                token: "twitch-token".into(),
+                platform: "twitch",
+            },
+            AstroAccount {
+                token: "youtube-token".into(),
+                platform: "youtube",
+            },
+        ];
+
+        let conflicted = reconcile_sources(accounts.clone(), true);
+        assert_eq!(conflicted.dropped, vec!["twitch"]);
+        assert_eq!(
+            conflicted.kept.len(),
+            1,
+            "the token is still held, just not connected"
+        );
+
+        // The token survives the decision, byte for byte.
+        assert_eq!(conflicted.kept[0].token, "youtube-token");
+
+        // And nothing about the dropped one is needed to get it back, because
+        // the token was never read from — it was passed in.
+        let resolved = reconcile_sources(accounts, false);
+        assert_eq!(resolved.kept.len(), 2);
+        assert!(resolved.dropped.is_empty());
+    }
+
+    #[test]
+    fn native_twitch_needs_all_three_settings_and_not_two_of_three() {
+        // Mirrors what `start_twitch` requires. A partial config must not count
+        // as "native is on" — otherwise a streamer with a leftover channel name
+        // would silently lose their Astro Twitch connection to a conflict with
+        // something that was never going to connect anyway.
+        //
+        // `twitch_credential` defaults to an entry *name*, so it is cleared
+        // explicitly in the partial cases. Without that, "one of three" is
+        // secretly "two of three" and the test passes for the wrong reason.
+        // Built fresh each time: `Settings` owns strings, so a shared base
+        // would be moved into the first case and unavailable to the rest.
+        let unset = || Settings {
+            twitch_credential: None,
+            ..Settings::default()
+        };
+
+        assert!(
+            !native_twitch_configured(&Settings::default()),
+            "an entry name with no channel and no client id is not a connection",
+        );
+
+        assert!(
+            !native_twitch_configured(&Settings {
+                twitch_channel: Some("someone".into()),
+                ..unset()
+            }),
+            "one of three is not configured",
+        );
+
+        assert!(
+            !native_twitch_configured(&Settings {
+                twitch_channel: Some("someone".into()),
+                twitch_client_id: Some("id".into()),
+                ..unset()
+            }),
+            "two of three is still not configured",
+        );
+
+        assert!(
+            native_twitch_configured(&Settings {
+                twitch_channel: Some("someone".into()),
+                twitch_client_id: Some("id".into()),
+                twitch_credential: Some("yap-a-thon/twitch".into()),
+                ..Settings::default()
+            }),
+            "all three is configured",
+        );
     }
 }
