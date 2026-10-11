@@ -39,6 +39,18 @@ impl std::fmt::Debug for WhisperEngine {
     }
 }
 
+/// The parameters whisper is given for a backend.
+///
+/// Extracted so the tests check the *same* call the engine makes. A test that
+/// rebuilds these two lines checks itself, not the code: reintroducing the bug
+/// — passing `default()` instead — left every such test passing, because the
+/// copy in the test was still correct.
+fn context_parameters(resolved: DetectedBackend) -> whisper_rs::WhisperContextParameters<'static> {
+    let mut params = whisper_rs::WhisperContextParameters::default();
+    params.use_gpu(resolved.is_gpu());
+    params
+}
+
 impl WhisperEngine {
     /// Load a model and probe for the best available compute backend.
     ///
@@ -55,7 +67,39 @@ impl WhisperEngine {
         }
 
         let resolved = choice.resolve();
-        let params = whisper_rs::WhisperContextParameters::default();
+
+        // A downgrade is worth saying out loud. Someone who picked `Vulkan` and
+        // got the CPU should be told, because the alternative is discovering it
+        // from how slow it is.
+        //
+        // Only for a *specific* choice: `Auto` resolving to CPU on a CPU-only
+        // build is the expected answer, not a fallback to report.
+        if choice.is_specific() && resolved == DetectedBackend::Cpu && choice != BackendChoice::Cpu
+        {
+            log::warn!(
+                "yap-voice: {} was requested but this build has no GPU backend \\
+                 compiled in — running on the CPU",
+                choice.label()
+            );
+        }
+
+        // The choice has to be *passed in*, or it is only ever a label.
+        //
+        // `WhisperContextParameters::default()` sets `use_gpu` to
+        // `cfg!(feature = "_gpu")` — whisper-rs's own compile-time answer — so
+        // passing the default asked for whatever the binary was built with and
+        // ignored the setting entirely. `CPU` in the settings panel would
+        // therefore run on the GPU, and the engine would still record
+        // `backend: Cpu` in its own state and say so in a debug print. The
+        // streamer had no way to find out: nothing else in the app reports it.
+        //
+        // whisper.cpp treats this as "may I use a GPU", not "use this specific
+        // one" — it enumerates its own devices at load and picks. That is why
+        // `Auto` and an explicit GPU choice resolve to the same request, and why
+        // the honest answer to "which backend is this running on" is the one
+        // whisper prints, not the one we asked for.
+        let params = context_parameters(resolved);
+
         let context = whisper_rs::WhisperContext::new_with_params(
             model_path.to_str().ok_or_else(|| {
                 EngineError::ModelUnavailable(format!(
@@ -245,6 +289,90 @@ impl TranscriptionEngine for WhisperEngine {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The parameters `load` would build for a choice.
+    ///
+    /// # Why this is factored out
+    ///
+    /// The bug was that `WhisperContextParameters::default()` was passed
+    /// instead of one built from the choice, so the setting was a label. That is
+    /// invisible to any test that inspects `resolve()` — the resolution was
+    /// always correct; it just never went anywhere.
+    ///
+    /// So the seam is extracted and tested directly. Checking that `use_gpu`
+    /// reflects the choice catches the class of bug rather than one instance of
+    /// it, and does so without needing a GPU, a model, or whisper.cpp loaded.
+    ///
+    /// It calls the same [`context_parameters`] the engine does, rather than
+    /// rebuilding the two lines — a copy in the test passes against the bug it
+    /// was written for.
+    fn parameters_for(choice: BackendChoice) -> whisper_rs::WhisperContextParameters<'static> {
+        context_parameters(choice.resolve())
+    }
+
+    #[test]
+    fn the_backend_setting_reaches_whisper_rather_than_being_a_label() {
+        // CPU must mean CPU. It did not: whisper-rs defaults `use_gpu` to
+        // `cfg!(feature = "_gpu")`, so a GPU build ignored the setting entirely
+        // and ran on the GPU while the engine recorded `Cpu` in its own state.
+        assert!(
+            !parameters_for(BackendChoice::Cpu).use_gpu,
+            "CPU was chosen, so use_gpu must be false — otherwise the setting is \
+             decoration and the model silently runs on the GPU",
+        );
+
+        // The same must hold whatever this build has compiled in, and that
+        // needs an assertion that is not vacuous on a CPU-only machine.
+        //
+        // Every "must be false" check is vacuous here: on a build with no GPU
+        // feature, `default()` is already `false`, so a builder that ignored its
+        // argument entirely would pass. That is how the bug got in, and how it
+        // would come back without anyone noticing on a machine without a GPU.
+        //
+        // So ask for a GPU and require a GPU to be requested — which
+        // distinguishes a working builder from a default one on *every* build.
+        // Whether the request should be made at all is [`BackendChoice::resolve`]'s
+        // job, and is checked there; this is only "does the answer arrive".
+        assert!(
+            context_parameters(DetectedBackend::Vulkan).use_gpu,
+            "asking for a GPU must request one — if this is false the builder is \
+             ignoring its argument and every setting is decoration"
+        );
+        assert!(
+            context_parameters(DetectedBackend::Cuda).use_gpu,
+            "asking for CUDA must request a GPU too"
+        );
+        assert!(
+            !context_parameters(DetectedBackend::Cpu).use_gpu,
+            "asking for the CPU must not request a GPU"
+        );
+    }
+
+    #[test]
+    fn a_gpu_choice_asks_whisper_for_one() {
+        // The other direction. A build with no GPU feature resolves everything
+        // to CPU and asks for none, which is correct: there is nothing to ask
+        // for, and asking produces no fallback.
+        let expected = BackendChoice::Vulkan.resolve().is_gpu();
+        assert_eq!(
+            parameters_for(BackendChoice::Vulkan).use_gpu,
+            expected,
+            "whether Vulkan is requested must follow whether this build has it",
+        );
+    }
+
+    #[test]
+    fn auto_follows_the_build_rather_than_always_asking_for_a_gpu() {
+        // `Auto` on a CPU-only build must not ask whisper for a GPU. It used to
+        // report CPU while asking for whatever the binary was built with, which
+        // is the same lie in the other direction.
+        let expected = BackendChoice::Auto.resolve().is_gpu();
+        assert_eq!(
+            parameters_for(BackendChoice::Auto).use_gpu,
+            expected,
+            "auto must ask for exactly what it resolved to",
+        );
+    }
 
     #[test]
     fn a_missing_model_names_the_path() {
