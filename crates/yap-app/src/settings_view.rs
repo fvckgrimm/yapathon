@@ -1513,9 +1513,18 @@ impl gpui::Render for SettingsView {
                     .child(format!("saved to {}", self.path.display())),
             )
             .child(self.render_sections(&me, cx))
-            .when(picker.is_some(), |this| {
-                this.child(div().px_4().child(div()))
-            })
+            // The picker itself, not a stand-in for it.
+            //
+            // This drew an empty `div` in place of the element `picker` holds.
+            // Every other part of the code was correct — the button, the handler,
+            // the async result, the model list, the state it writes to — and all
+            // of it was unreachable, so the section showed a text field and
+            // nothing else. There was no file chooser on screen, and choosing a
+            // model meant typing an absolute path to a 460 MB file.
+            //
+            // Silent in the way this project keeps finding: no error, no log
+            // line, a button that was written, wired and never drawn.
+            .when(picker.is_some(), |this| this.child(picker.unwrap()))
             .child(div().flex().flex_col().px_4().children(fields))
             .child(self.render_footer(&me, cx))
     }
@@ -2260,6 +2269,94 @@ mod tests {
         assert!(
             SETTINGS_SECTIONS.iter().any(|s| s.title == "Engine"),
             "the Engine section is what the model picker hangs off"
+        );
+    }
+
+    #[gpui_kit::test]
+    fn the_engine_section_offers_a_file_chooser_and_not_just_a_text_box(
+        cx: &mut gpui_kit::TestAppContext,
+    ) {
+        // The gap this closes: `SharedId::browse_model`'s own doc comment claims
+        // "a test looking for it is how we know the engine section drew its
+        // picker at all" — and no test looked for it. So the chooser could stop
+        // rendering, or stop responding, and every other test here would pass.
+        //
+        // It builds the real panel, opens the real section, and asks the
+        // question that was asked of it: is there a way to pick a file other
+        // than typing its absolute path?
+        //
+        // Which matters, because typing an absolute path is the wrong way to
+        // choose a file. Someone who has just downloaded a 460 MB model should
+        // not have to know where it landed or spell out `/home/…` to use it.
+        use std::rc::Rc;
+
+        use gpui_kit::{IntoElement, Render, test::TestWindowExt as _};
+
+        /// A window root that is nothing but the settings panel.
+        ///
+        /// `add_window_view` needs something that implements `Render`, and the
+        /// panel is a sub-view of the main window rather than a root itself.
+        struct Root(Entity<SettingsView>);
+
+        impl Render for Root {
+            fn render(
+                &mut self,
+                _window: &mut gpui::Window,
+                _cx: &mut gpui::Context<Self>,
+            ) -> impl IntoElement {
+                self.0.clone().into_any_element()
+            }
+        }
+
+        // The panel reads the kit theme while building, so the global state has
+        // to exist before the window is made rather than inside it.
+        cx.update(gpui_kit::init);
+
+        let engine = engine_section();
+        // Kept so the panel can be inspected after the window is built; the root
+        // it sits in is a wrapper that exists only to satisfy `Render`.
+        let panel: Rc<std::cell::Cell<Option<gpui::Entity<SettingsView>>>> =
+            Rc::new(std::cell::Cell::new(None));
+
+        let (_, cx) = cx.add_window_view({
+            let panel = panel.clone();
+            move |window, cx| {
+                let (_sender, receiver) = async_channel::unbounded::<crate::model::ModelMessage>();
+                let session = crate::model::SessionEntity::new(
+                    yap_server::AppState::shared(),
+                    receiver,
+                    "http://127.0.0.1/overlay".to_string(),
+                    cx,
+                );
+
+                let view = SettingsView::new(
+                    session,
+                    Settings::default(),
+                    std::path::PathBuf::from("/nonexistent/settings.toml"),
+                    window,
+                    cx,
+                );
+                panel.set(Some(view.clone()));
+                Root(view)
+            }
+        });
+
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+
+        // Open the section that owns the model path. Defaults to the first one,
+        // which is Engine today — pinned by a test elsewhere, but not assumed
+        // here.
+        let entity = panel.take().expect("the panel was built");
+        let opened = cx.update(|_window, cx| entity.read(cx).settings.section);
+        assert_eq!(
+            opened, engine,
+            "the panel should open on Engine, and the picker hangs off that section",
+        );
+
+        assert!(
+            cx.update(|window, _| window.try_find(SharedId::browse_model()).is_some()),
+            "the Engine section offers only a text field — there is no way to pick \
+             a model file without typing its absolute path",
         );
     }
 
