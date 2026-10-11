@@ -95,6 +95,9 @@ function classify(file) {
   const lines = readFileSync(file, 'utf8').trim().split('\n').filter(Boolean);
 
   const kinds = new Map();
+  // Which connection delivered what. Absent in dumps from the single-account
+  // probe, which is why every read here tolerates it.
+  const conns = new Map();
   let frames = 0;
   let first = null;
   let last = null;
@@ -112,10 +115,23 @@ function classify(file) {
     last = row.received_at;
 
     const frame = row.frame ?? {};
+    const conn = row.conn ?? '(single)';
+
+    const connEntry = conns.get(conn) ?? { n: 0, providers: new Map(), kinds: new Set() };
+    connEntry.n += 1;
+    conns.set(conn, connEntry);
+
+    if (frame.type === 'response' && !frame.error) {
+      connEntry.room = frame.data?.room ?? connEntry.room;
+      continue;
+    }
     if (frame.type !== 'message') continue;
 
     const topic = frame.topic;
     const data = frame.data ?? {};
+
+    connEntry.providers.set(data.provider ?? '?', (connEntry.providers.get(data.provider ?? '?') ?? 0) + 1);
+    connEntry.kinds.add(data.type);
 
     let kind;
     let payload;
@@ -168,11 +184,13 @@ function classify(file) {
   latencies.sort((a, b) => a - b);
   const median = latencies.length ? latencies[Math.floor(latencies.length / 2)] : null;
 
-  return { file, frames, first, last, kinds, medianLatency: median, n: latencies.length };
+  return { file, frames, first, last, kinds, conns, medianLatency: median, n: latencies.length };
 }
 
 function report(r) {
-  const mins = r.first && r.last ? ((r.last - r.first) / 60000).toFixed(1) : '0';
+  // Clamped: merging two dumps taken hours apart gives a negative span,
+  // which reads as a broken clock rather than as two files.
+  const mins = r.first && r.last ? (Math.max(0, r.last - r.first) / 60000).toFixed(1) : '0';
   console.log(`\n${'═'.repeat(78)}`);
   console.log(`${basename(r.file)}`);
   console.log(`${r.frames} frames over ${mins} min · median delivery ${r.medianLatency === null ? 'n/a' : `${r.medianLatency}ms`} (n=${r.n})`);
@@ -182,6 +200,46 @@ function report(r) {
     return;
   }
 
+  // Per connection first, because with several accounts open the question is
+  // not "does a cheer have a size" but "did each account get its own, and did
+  // exactly one of them deliver each platform".
+  if (r.conns.size > 1) {
+    console.log(`\nPer connection:`);
+    console.log(`${'─'.repeat(78)}`);
+    console.log(`${'CONN'.padEnd(12)}${'ROOM'.padEnd(26)}${'PROVIDERS'.padEnd(22)}FRAMES`);
+    console.log(`${'─'.repeat(78)}`);
+    for (const [label, c] of r.conns) {
+      const providers = c.providers.size
+        ? [...c.providers].map(([p, n]) => `${p}(${n})`).join(' ')
+        : '— nothing yet —';
+      console.log(
+        `${label.padEnd(12)}${(c.room ?? '—').slice(0, 25).padEnd(26)}${providers.padEnd(22)}${c.n}`,
+      );
+    }
+    console.log(`${'─'.repeat(78)}`);
+
+    // The same platform delivered by two connections would be counted twice by
+    // the app, which is the one thing a multi-account run must not reveal.
+    const owner = new Map();
+    let clash = 0;
+    for (const [label, c] of r.conns) {
+      for (const provider of c.providers.keys()) {
+        if (owner.has(provider)) {
+          console.log(`  ! ${provider} is delivered by both ${owner.get(provider)} and ${label}`);
+          clash += 1;
+        }
+        owner.set(provider, label);
+      }
+    }
+    if (clash === 0 && r.conns.size > 1) {
+      const anything = [...r.conns.values()].some((c) => c.providers.size > 0);
+      if (anything) {
+        console.log('  Every platform is delivered by exactly one connection — no double counting.');
+      }
+    }
+  }
+
+  console.log(`\nPer event kind:`);
   console.log(`${'─'.repeat(78)}`);
   console.log(`${'KIND'.padEnd(34)} ${'N'.padStart(3)}  ${'SIZE FIELDS'.padEnd(26)} VERDICT`);
   console.log(`${'─'.repeat(78)}`);

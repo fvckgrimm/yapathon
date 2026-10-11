@@ -29,16 +29,32 @@ Two things that bite:
 **2. Run it while streaming.**
 
 ```sh
-SE_JWT=<token> node probe.mjs
-# optionally, to be explicit about the channel:
-SE_JWT=<token> SE_ROOM=<channelId> node probe.mjs
+cp .env.example .env     # then fill it in
+node probe.mjs
 ```
+
+`.env` is gitignored. One variable per account, and the variable name becomes
+the connection's label:
+
+```
+SE_JWT_YOUTUBE=<jwt copied while switched to the YouTube account>
+SE_JWT_TWITCH=<jwt copied while switched to the Twitch account>
+```
+
+`SE_JWT=<token>` still works for a single account.
+
+Every connection opens **at the same time**, not in sequence. StreamElements'
+simulator only fires for whichever account is currently active, so testing them
+one at a time proves each works and proves nothing about both at once — this
+runs them concurrently, and the summary tells you whether each platform arrived
+on exactly one connection, which is what the app needs to avoid counting a
+cheer twice.
 
 Needs Node 22+ for the built-in `WebSocket`. No packages, no install.
 
-It writes `astro-<timestamp>.jsonl` — every frame, verbatim, with a local
-timestamp — and prints a live line per event. Ctrl-C stops it and prints a
-summary.
+It writes `astro-<timestamp>.jsonl` — every frame, verbatim, tagged with which
+connection delivered it — and prints a live line per event, prefixed with the
+connection. Ctrl-C prints a summary.
 
 **3. Trigger events, then read the verdict.**
 
@@ -46,10 +62,19 @@ summary.
 node analyse.mjs astro-<timestamp>.jsonl
 ```
 
-The analyser collects the union of every key seen in each kind of payload and
-checks it against what the pricing rule needs, so a field that only shows up on
-the third event of its kind is not missed. It also reports median delivery
-latency.
+The analyser groups by connection first — room, providers seen, frame count —
+then reports the union of every key seen in each kind of payload against what the
+pricing rule needs, so a field that only shows up on the third event of its kind
+is not missed. It also reports median delivery latency.
+
+Two things it is looking for that a per-event table cannot show:
+
+- **the same platform delivered by two connections**, which the app would count
+  twice
+- **a connection whose events are not the platform it is labelled with**, which
+  means the token was copied while switched to a different account. The label is
+  only a label — pricing follows each event's own `provider` — so this costs
+  nothing but a confusing setup, and is worth knowing about.
 
 ## Checklist
 
@@ -74,6 +99,25 @@ doing something the native path fundamentally cannot.
 Also worth timing: **leave it connected a week** and see whether the JWT still
 works. A credential that rots is the same "worked until it quietly didn't"
 failure this project has hit six times already.
+
+## Two accounts at once
+
+```
+2 account(s): twitch, youtube
+[twitch] connected  client=01M4M5DVXH913JQ2RXKG33GPY0
+[youtube] connected  client=01M4M5DVXP9W1V6RMTAF33881X
+[youtube] EVENT  youtube/superchat          CosmicNinja650    amount=5 [amount]
+[twitch]  EVENT  twitch/cheer               Someone           amount=2500 [amount]
+
+CONN       LABEL      ROOM                      PROVIDERS SEEN        EVENTS
+1          twitch     5e7439a029f72805e1d577fb  twitch(18)            23
+2          youtube    6acac21e4f4bb2e1b6a85f76  youtube(10)           15
+```
+
+Each connection resolves its own room from its own token, and each delivers its
+own platform. Run it, switch the active account on StreamElements, simulate, and
+confirm the other connection keeps its subscription alive throughout — that is
+the property testing one account at a time cannot show.
 
 ## What the probe found (2026-10-10)
 

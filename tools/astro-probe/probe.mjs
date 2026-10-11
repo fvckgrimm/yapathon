@@ -2,201 +2,214 @@
 //
 // Astro probe — StreamElements' WebSocket gateway.
 //
-// Answers one question, the one the whole integration decision turns on:
+// Opens **one connection per token**, so a streamer who cross-streams can
+// confirm both are handled at the same time. StreamElements' widget simulator
+// only produces events for whichever account is currently active, so testing
+// them one at a time proves each works but proves nothing about both at once;
+// this runs them concurrently and labels every line with which connection it
+// came from.
 //
-//   do the event payloads carry enough *size* information to price an event
-//   by it, or not?
+// Credentials come from a `.env` file next to this script: one `SE_JWT_<NAME>`
+// variable per account. Falls back to `SE_JWT` for a single account.
 //
-// That decides whether StreamElements could price a Super Chat by what was
-// actually spent and a cheer by its bits — which is the entire premise of
-// yap-a-thon's pricing rule — or whether every event through this gateway
-// would have to be a flat grant.
+// Also answers, per connection:
 //
-// Nothing here is wired into the app. It connects, subscribes, dumps every
-// frame verbatim, and gets out of the way.
+//   - which **room** Astro resolved, which is how you know the token was copied
+//     while switched to the account you thought
+//   - which **provider** its events actually carry, which is how you know the
+//     label is right
+//   - whether two connections are delivering the **same** platform, which would
+//     mean one platform is about to be counted twice
+//
+// Nothing here is wired into the app.
 //
 // Usage:
 //
-//   SE_JWT=<token> node probe.mjs
-//   SE_JWT=<token> SE_ROOM=<channelId> node probe.mjs
-//
-// SE_ROOM is optional — omitting it subscribes to the authenticated channel.
+//   cp .env.example .env    # then fill in
+//   node probe.mjs
 //
 // Requires Node 22+ for the built-in WebSocket. No packages, no install.
 
 import { createWriteStream } from 'node:fs';
 import { randomUUID } from 'node:crypto';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
-const JWT = process.env.SE_JWT;
-const ROOM = process.env.SE_ROOM ?? '';
+const HERE = dirname(fileURLToPath(import.meta.url));
+
+// `.env` if it is there. Missing is fine — the environment can carry the same
+// variables — so this never fails, it just does less.
+try {
+  process.loadEnvFile(join(HERE, '.env'));
+} catch {
+  // No .env. Environment variables still work.
+}
+
 const STAMP = new Date().toISOString().replace(/[:.]/g, '-');
 const OUT = process.env.SE_OUT ?? `astro-${STAMP}.jsonl`;
 
 const ENDPOINT = 'wss://astro.streamelements.com';
 
-// The four topics that between them could answer the question. `activities` is
-// the event feed, `session.update` carries keyed session objects that the
-// Session Data Reference documents amounts for, `tips` is donations, and
-// `chat.message` is what a `!yap` command would arrive on.
-const TOPICS = [
-  'channel.activities',
-  'channel.session.update',
-  'channel.tips',
-  'channel.chat.message',
-];
+// The one topic used. Everything measured that a yapathon prices is on it.
+const TOPIC = 'channel.activities';
 
-// Field names that would mean "this event knows how big it was". Matched
-// case-insensitively anywhere in a payload, because the shape differs per topic
-// and per activity type and guessing a single path would miss half of them.
-const SIZE_KEY = /^(amount|bits|amountmicros|amountdisplaystring|price|value|count|viewers|viewercount|giftcount|month|months|tier)$/i;
+// Field names meaning "this event knows how big it was". Matched anywhere in a
+// payload, because the shape differs per activity type and guessing one path
+// would miss half of them.
+const SIZE_KEY =
+  /^(amount|bits|amountmicros|amountdisplaystring|price|value|count|viewers|viewercount|giftcount|month|months|tier)$/i;
 
-if (!JWT) {
-  console.error('SE_JWT is required. Copy it from the StreamElements dashboard:');
-  console.error('  avatar (top right) > your channel > copy the JWT token.');
-  console.error('See README.md in this directory.');
-  process.exit(2);
+/** Every configured account, from `SE_JWT_*` variables, in name order. */
+function accounts() {
+  const found = Object.entries(process.env)
+    .filter(([key, value]) => key.startsWith('SE_JWT_') && value && value.trim())
+    .map(([key, value]) => ({
+      // `SE_JWT_YOUTUBE` -> `youtube`, which is how it is labelled in the log.
+      name: key.slice('SE_JWT_'.length).toLowerCase(),
+      token: value.trim(),
+    }))
+    .sort((a, b) => a.name.localeCompare(b.name));
+
+  if (found.length > 0) return found;
+
+  // The single-account form, so this script still works the way it did before.
+  const single = process.env.SE_JWT?.trim();
+  return single ? [{ name: 'single', token: single }] : [];
 }
+
+// --- per-connection state, so the summary can be printed from memory --------
+
+/** @type {Map<string, object>} keyed by the connection's label */
+const conns = new Map();
+
+function connState(label, index) {
+  let state = conns.get(label);
+  if (!state) {
+    state = {
+      label,
+      index,
+      room: null,
+      subscribed: false,
+      events: 0,
+      /** Providers actually seen, with counts. */
+      providers: new Map(),
+      error: null,
+    };
+    conns.set(label, state);
+  }
+  return state;
+}
+
+// --- event handling ---------------------------------------------------------
 
 const out = createWriteStream(OUT, { flags: 'a' });
-const counts = { frames: 0, activities: 0, sessionUpdates: 0, tips: 0, chat: 0 };
-let subscribed = 0;
-let attempts = 0;
-let socket = null;
+let frames = 0;
 let stopping = false;
 
-// Everything seen, so the summary at the end can be printed from memory rather
-// than by re-reading the file. One entry per interesting frame.
-const seen = new Map(); // key -> { topic, kind, sizeKeys:Set, sample }
-
-function log(...parts) {
-  console.log(...parts);
-}
-
-function record(topic, kind, payload, frame) {
-  const sizeKeys = new Set();
-  const walk = (node) => {
-    if (Array.isArray(node)) {
-      node.forEach(walk);
+/** Keys seen anywhere in a payload, and the size-bearing ones among them. */
+function sizeKeysOf(node) {
+  const size = new Set();
+  const walk = (n) => {
+    if (Array.isArray(n)) {
+      n.forEach(walk);
       return;
     }
-    if (node && typeof node === 'object') {
-      for (const [k, v] of Object.entries(node)) {
-        if (SIZE_KEY.test(k) && (typeof v === 'number' || typeof v === 'string')) {
-          sizeKeys.add(k);
-        }
+    if (n && typeof n === 'object') {
+      for (const [k, v] of Object.entries(n)) {
+        if (SIZE_KEY.test(k) && (typeof v === 'number' || typeof v === 'string')) size.add(k);
         walk(v);
       }
     }
   };
-  walk(payload);
-
-  const key = `${topic}|${kind}`;
-  const entry = seen.get(key) ?? { topic, kind, n: 0, sizeKeys: new Set(), sample: frame };
-  entry.n += 1;
-  sizeKeys.forEach((k) => entry.sizeKeys.add(k));
-  seen.set(key, entry);
-
-  const mark = sizeKeys.size ? `[size: ${[...sizeKeys].join(', ')}]` : '[NO SIZE FIELD]';
-  return mark;
+  walk(node);
+  return size;
 }
 
-function onFrame(frame) {
-  counts.frames += 1;
-  out.write(`${JSON.stringify({ received_at: Date.now(), frame })}\n`);
+function onFrame(state, frame) {
+  frames += 1;
+  // `conn` is what lets the analyser group events by which connection delivered
+  // them — the whole point of running two at once.
+  out.write(`${JSON.stringify({ received_at: Date.now(), conn: state.label, frame })}\n`);
 
   const type = frame?.type;
 
   if (type === 'welcome') {
-    log(`\n✓ connected  client=${frame.data?.client_id}`);
-    subscribeAll();
+    log(`[${state.label}] connected  client=${frame.data?.client_id}`);
+    subscribe(state);
     return;
   }
 
   if (type === 'response') {
     if (frame.error) {
-      log(`  ✗ subscribe failed: ${frame.error} — ${frame.data?.message}`);
-    } else if (subscribed < TOPICS.length) {
-      subscribed += 1;
-      log(`  ✓ subscribed to ${frame.data?.topic}  room=${frame.data?.room}`);
+      state.error = `${frame.error}: ${frame.data?.message ?? ''}`;
+      log(`[${state.label}] ✗ subscribe failed — ${state.error}`);
+    } else {
+      state.subscribed = true;
+      // The room Astro resolved from the token. Printed because this is how a
+      // token copied while switched to the wrong account announces itself: the
+      // room will not be the one the label suggests.
+      state.room = frame.data?.room ?? state.room;
+      log(`[${state.label}] ✓ subscribed  room=${state.room}`);
     }
     return;
   }
 
   if (type === 'reconnect') {
-    // Graceful drain. The token restores every subscription on the new
-    // connection, so this is the one reconnection that is not a gap.
     const token = frame.data?.reconnect_token;
-    log(`\n↻ server draining; reconnecting with token`);
-    if (socket) socket.close();
-    connect(`?reconnect_token=${encodeURIComponent(token)}`);
+    log(`[${state.label}] ↻ server draining; reconnecting`);
+    if (state.socket) state.socket.close();
+    setTimeout(() => connect(state, `?reconnect_token=${encodeURIComponent(token)}`), 500);
     return;
   }
 
   if (type !== 'message') return;
+  if (frame.topic !== TOPIC) return;
 
-  const topic = frame.topic;
-  const data = frame.data ?? {};
+  const activity = frame.data?.data;
+  if (!activity) return;
 
-  if (topic === 'channel.activities') {
-    counts.activities += 1;
-    const kind = `${data.type}/${data.provider}`;
-    const mark = record(topic, kind, data.data ?? data, data);
-    log(`  activity   ${kind.padEnd(28)} ${data.data?.displayName ?? '?'}  ${mark}`);
-    return;
-  }
+  state.events += 1;
 
-  if (topic === 'channel.session.update') {
-    counts.sessionUpdates += 1;
-    // The docs say `data.key` and `data.name` are the same value. They are not
-    // both present: a real payload carries only `name`, so reading `key` alone
-    // labels every session frame "undefined". Falls back to whichever is there.
-    const key = data.key ?? data.name ?? '(no key)';
-    const mark = record(topic, key, data.data ?? {}, data);
-    log(`  session    ${String(key).padEnd(28)} ${data.provider ?? '?'}  ${mark}`);
-    return;
-  }
+  const provider = frame.data?.provider ?? 'unknown';
+  state.providers.set(provider, (state.providers.get(provider) ?? 0) + 1);
 
-  if (topic === 'channel.tips') {
-    counts.tips += 1;
-    const mark = record(topic, `tip/${data.provider}`, data.donation ?? {}, data);
-    const who = data.donation?.user?.username ?? '?';
-    log(`  tip        ${who.padEnd(28)} ${data.donation?.currency ?? ''} ${data.donation?.amount ?? '?'}  ${mark}`);
-    return;
-  }
+  const isMock = frame.data?.isMock === true;
+  const size = [...sizeKeysOf(activity)];
+  const mark = size.length ? `amount=${activity.amount ?? '-'} [${size.join(',')}]` : 'no size field';
 
-  if (topic === 'channel.chat.message') {
-    counts.chat += 1;
-    const mark = record(topic, 'message', data, data);
-    const who = data.displayName ?? data.nick ?? '?';
-    log(`  chat       ${who.padEnd(28)} ${mark}`);
-  }
+  log(
+    `[${state.label}] ${isMock ? 'mock  ' : 'EVENT '} ` +
+      `${provider}/${frame.data?.type ?? '?'}`.padEnd(28) +
+      ` ${(activity.displayName ?? '?').padEnd(18)} ${mark}`,
+  );
 }
 
-function subscribeAll() {
-  for (const topic of TOPICS) {
-    socket.send(
-      JSON.stringify({
-        type: 'subscribe',
-        nonce: randomUUID(),
-        data: {
-          topic,
-          ...(ROOM ? { room: ROOM } : {}),
-          token: JWT,
-          token_type: 'jwt',
-        },
-      }),
-    );
-  }
-  log(`\n  subscribed to ${TOPICS.length} topics${ROOM ? ` (room ${ROOM})` : ' (default room)'}`);
-  log('  now trigger some events — see README.md for the checklist.\n');
+function subscribe(state) {
+  const room = process.env.SE_ROOM?.trim();
+  state.socket.send(
+    JSON.stringify({
+      type: 'subscribe',
+      nonce: randomUUID(),
+      data: {
+        topic: TOPIC,
+        ...(room ? { room } : {}),
+        token: state.token,
+        token_type: 'jwt',
+      },
+    }),
+  );
 }
 
-function connect(query = '') {
-  if (stopping) return;
+// --- connection -------------------------------------------------------------
 
-  socket = new WebSocket(`${ENDPOINT}/${query}`);
+const attempts = new Map();
 
-  socket.addEventListener('message', (event) => {
+function connect(state, query = '') {
+  if (stopping || state.done) return;
+
+  state.socket = new WebSocket(`${ENDPOINT}/${query}`);
+
+  state.socket.addEventListener('message', (event) => {
     let frame;
     try {
       frame = JSON.parse(event.data);
@@ -204,58 +217,141 @@ function connect(query = '') {
       return;
     }
     try {
-      onFrame(frame);
+      onFrame(state, frame);
     } catch (error) {
-      log(`  ! handler error: ${error.message}`);
+      log(`[${state.label}] ! handler error: ${error.message}`);
     }
   });
 
-  socket.addEventListener('close', (event) => {
-    if (stopping) return;
+  state.socket.addEventListener('close', (event) => {
+    if (stopping || state.done) return;
 
     if (query.includes('reconnect_token')) {
-      log(`  ✗ reconnect token rejected (${event.code}) — resubscribing from scratch`);
-      subscribed = 0;
+      log(`[${state.label}] ✗ reconnect token rejected (${event.code}) — subscribing afresh`);
       query = '';
+      attempts.set(state.label, 0);
     }
 
-    // Exponential backoff, capped. EventSub has the same shape; a yapathon
-    // whose chat quietly stops counting has a goal that stops meaning anything.
-    attempts += 1;
-    const delay = Math.min(1000 * 2 ** (attempts - 1), 30_000);
-    log(`  ✗ closed (${event.code}) — retrying in ${delay}ms`);
-    setTimeout(() => connect(query), delay);
-  });
-
-  socket.addEventListener('error', () => {
-    // `close` always follows, and that is where reconnection is handled.
+    const n = (attempts.get(state.label) ?? 0) + 1;
+    attempts.set(state.label, n);
+    const delay = Math.min(1000 * 2 ** (n - 1), 30_000);
+    log(`[${state.label}] ✗ closed (${event.code}) — retrying in ${delay}ms`);
+    setTimeout(() => connect(state, query), delay);
   });
 }
 
-function summarise() {
-  log(`\n${'─'.repeat(72)}`);
-  log(`frames ${counts.frames}  activities ${counts.activities}  session ${counts.sessionUpdates}  tips ${counts.tips}  chat ${counts.chat}`);
-  log(`${'─'.repeat(72)}`);
-  log(`${'TOPIC'.padEnd(24)} ${'KIND'.padEnd(26)} ${'N'.padStart(3)}  SIZE FIELDS`);
-  log(`${'─'.repeat(72)}`);
+// --- summary ----------------------------------------------------------------
 
-  for (const entry of seen.values()) {
-    const size = entry.sizeKeys.size ? [...entry.sizeKeys].join(', ') : '— none —';
-    log(`${entry.topic.padEnd(24)} ${entry.kind.padEnd(26)} ${String(entry.n).padStart(3)}  ${size}`);
+function summarise() {
+  const states = [...conns.values()];
+
+  log(`\n${'═'.repeat(92)}`);
+  log(`${states.length} connection(s), ${frames} frames`);
+  log(`${'═'.repeat(92)}`);
+  log(
+    `${'CONN'.padEnd(11)}${'LABEL'.padEnd(11)}${'ROOM'.padEnd(26)}` +
+      `${'PROVIDERS SEEN'.padEnd(22)}EVENTS`,
+  );
+  log(`${'─'.repeat(92)}`);
+
+  for (const s of states) {
+    const providers = s.providers.size
+      ? [...s.providers].map(([p, n]) => `${p}(${n})`).join(' ')
+      : '— nothing yet —';
+    log(
+      `${String(s.index + 1).padEnd(11)}${s.label.padEnd(11)}` +
+        `${(s.room ?? '—').slice(0, 25).padEnd(26)}${providers.padEnd(22)}${s.events}`,
+    );
   }
-  log(`${'─'.repeat(72)}`);
-  log(`\nNow run:  node analyse.mjs ${OUT}`);
+  log(`${'─'.repeat(92)}`);
+
+  // Two questions the run was really for.
+  const roomOwner = new Map();
+  const providerOwner = new Map();
+  let problems = 0;
+
+  for (const s of states) {
+    if (s.room) {
+      const other = roomOwner.get(s.room);
+      if (other && other !== s.label) {
+        log(`  ! both "${other}" and "${s.label}" resolved to the same room ${s.room}`);
+        log(`    that is one account counted twice — check they were copied while switched apart`);
+        problems += 1;
+      }
+      roomOwner.set(s.room, s.label);
+    }
+
+    for (const [provider] of s.providers) {
+      const other = providerOwner.get(provider);
+      if (other && other !== s.label) {
+        log(`  ! "${other}" and "${s.label}" are both delivering ${provider} events`);
+        log(`    that platform would be counted twice by the app`);
+        problems += 1;
+      }
+      providerOwner.set(provider, s.label);
+    }
+
+    if (s.label !== 'single' && s.providers.size && ![...s.providers.keys()].includes(s.label)) {
+      log(`  ~ "${s.label}" is delivering ${[...s.providers.keys()].join(', ')} events`);
+      log(`    the label is only a label — pricing follows the event — but it means the`);
+      log(`    token was probably copied while switched to a different account`);
+    }
+
+    if (s.error) {
+      log(`  ✗ ${s.label}: ${s.error}`);
+      problems += 1;
+    }
+  }
+
+  if (states.every((s) => s.events === 0)) {
+    log('\n  Nothing arrived on any connection.');
+    log('  The simulator only fires for one active account at a time — switch');
+    log('  StreamElements between simulations and watch every connection keep up.');
+  } else if (problems === 0) {
+    log('\n  Every platform is delivered by exactly one connection. That is the');
+    log('  configuration the app wants: one source per platform, no double counting.');
+  }
+
+  log(`\nNow run:  node analyse.mjs ${OUT}\n`);
+}
+
+function log(message) {
+  console.log(message);
 }
 
 process.on('SIGINT', () => {
   stopping = true;
-  if (socket) socket.close();
+  for (const state of conns.values()) {
+    state.done = true;
+    state.socket?.close();
+  }
   out.end(() => {
     summarise();
     process.exit(0);
   });
 });
 
+// --- go ---------------------------------------------------------------------
+
+const configured = accounts();
+
+if (configured.length === 0) {
+  console.error('No tokens found.');
+  console.error('');
+  console.error('Copy .env.example to .env and add one SE_JWT_<NAME> per account,');
+  console.error('or set SE_JWT in the environment for a single one.');
+  process.exit(2);
+}
+
 log(`Astro probe → ${OUT}`);
 log(`Node ${process.version}`);
-connect();
+log(`${configured.length} account(s): ${configured.map((a) => a.label).join(', ')}`);
+log('');
+
+// Started together rather than in sequence, which is the point: whether two
+// connections coexist is exactly what running them one after another cannot show.
+for (const [index, account] of configured.entries()) {
+  const state = connState(account.name, index);
+  state.token = account.token;
+  connect(state);
+}
