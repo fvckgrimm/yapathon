@@ -267,15 +267,17 @@ fn start_astro(hub: &Hub) {
         return;
     }
 
+    // Read here rather than lazily on the first simulated event, so the warning
+    // that this build is counting fake cheers appears at launch — where it can
+    // still stop the stream — rather than after one has already been counted.
+    if !yap_events::astro::mock_events_allowed() {
+        return;
+    }
+
     // Astro names events `<platform>:<kind>`, the same shape EventSub uses, so
     // the prices a streamer already set carry over rather than silently
     // re-pricing itself to nothing on the day they switch.
-    let mut pricing = std::collections::BTreeMap::new();
-    for platform in ["twitch", "youtube", "kick"] {
-        pricing.extend(hub.settings().pricing_for(platform));
-    }
-
-    let platform = AstroPlatform::new(accounts, pricing);
+    let platform = AstroPlatform::new(accounts, astro_pricing(hub.settings()));
 
     let sink: Arc<dyn EventSink> = Arc::new(StateEventSink { hub: hub.clone() });
 
@@ -330,6 +332,30 @@ pub fn astro_accounts() -> Vec<AstroAccount> {
 ///
 /// All three settings or none, which is what `start_twitch` requires and what
 /// this mirrors.
+/// The prices Astro events are awarded with.
+///
+/// The whole `<platform>:<kind>` map, unchanged.
+///
+/// Astro names an event by the provider that sent it, so `twitch:cheer` arriving
+/// through Astro means exactly what it means arriving through EventSub and must
+/// carry exactly the same price.
+///
+/// Filtering by platform here would look tidier and would be wrong.
+/// `Settings::pricing_for` strips the prefix, so a filtered map is keyed `cheer`
+/// while the lookup is by `twitch:cheer` — every price misses, every event from
+/// every platform silently grants nothing, and the overlay shows a number that
+/// never moves. Which is exactly what happened.
+///
+/// Named rather than inlined at the call site for the same reason
+/// [`twitch_pricing`] is: a test that builds the pricing itself passes whether
+/// or not the call site uses the same keys, which is how this stayed hidden
+/// while everything looked connected and nothing was priced.
+pub fn astro_pricing(
+    settings: &yap_core::settings::Settings,
+) -> std::collections::BTreeMap<String, u32> {
+    settings.event_words.clone()
+}
+
 pub fn native_twitch_configured(settings: &yap_core::settings::Settings) -> bool {
     settings.twitch_channel.is_some()
         && settings.twitch_credential.is_some()
@@ -872,5 +898,99 @@ mod tests {
             }),
             "all three is configured",
         );
+    }
+
+    #[test]
+    fn a_price_in_the_settings_file_actually_prices_an_astro_event() {
+        // The bug that cost a day.
+        //
+        // `start_astro` built its pricing with `Settings::pricing_for`, which
+        // strips the platform prefix, and `AstroPlatform` looked events up by the
+        // full `twitch:cheer`. Every lookup missed, every event from every
+        // platform was silently unpriced, and the overlay showed a number that
+        // never moved — while the log cheerfully said it was "receiving twitch
+        // events" and the payload tests all passed.
+        //
+        // The gap is exactly the seam: nothing crossed from the settings file
+        // into an actual priced event. Every other test built its own pricing,
+        // so every other test agreed with itself.
+        let mut settings = Settings::default();
+        settings.event_words.insert("twitch:cheer".into(), 1);
+        settings.event_words.insert("youtube:superchat".into(), 10);
+
+        let platform = AstroPlatform::new(Vec::new(), astro_pricing(&settings));
+
+        let cheer = r#"{"type":"message","topic":"channel.activities",
+          "data":{"type":"cheer","provider":"twitch",
+            "data":{"displayName":"Someone","amount":2500}}}"#;
+
+        let event = priced_event(&platform, cheer);
+        assert_eq!(
+            event.words,
+            Some(2500),
+            "a price of 1 per bit must actually reach a cheer",
+        );
+
+        let superchat = r#"{"type":"message","topic":"channel.activities",
+          "data":{"type":"superchat","provider":"youtube",
+            "data":{"displayName":"Viewer","amount":5}}}"#;
+
+        let event = priced_event(&platform, superchat);
+        assert_eq!(
+            event.words,
+            Some(50),
+            "and a YouTube price must actually reach a Super Chat",
+        );
+    }
+
+    #[test]
+    fn an_unpriced_astro_event_grants_nothing_and_says_so() {
+        // The other half: a blank Events box is a decision, and it should be
+        // visible rather than a number that quietly stays still.
+        let mut settings = Settings::default();
+        settings.event_words.insert("twitch:cheer".into(), 1);
+
+        let platform = AstroPlatform::new(Vec::new(), astro_pricing(&settings));
+
+        let follow = r#"{"type":"message","topic":"channel.activities",
+          "data":{"type":"follow","provider":"twitch",
+            "data":{"displayName":"Someone"}}}"#;
+
+        let event = priced_event(&platform, follow);
+
+        assert_eq!(
+            event.words, None,
+            "an event nobody priced is worth nothing, and says so rather than being zero",
+        );
+    }
+
+    #[test]
+    fn astro_prices_are_the_same_prices_the_other_platforms_use() {
+        // `twitch:cheer` means the same thing arriving through EventSub and
+        // through Astro. Sharing the table is what lets a streamer switch source
+        // without re-pricing everything, and it is why Astro gets the whole map
+        // rather than a filtered one.
+        let mut settings = Settings::default();
+        settings.event_words.insert("twitch:cheer".into(), 1);
+        settings.event_words.insert("chat:command".into(), 100);
+
+        let pricing = astro_pricing(&settings);
+
+        assert_eq!(pricing.get("twitch:cheer"), Some(&1));
+        assert_eq!(pricing.get("chat:command"), Some(&100));
+        assert_eq!(
+            pricing.get("cheer"),
+            None,
+            "keys must keep their platform prefix, or nothing can look them up",
+        );
+    }
+
+    /// Price one captured frame, the way the read loop does.
+    ///
+    /// Goes through the platform's own parser rather than rebuilding the wire
+    /// types, so the test crosses the real seam: a JSON payload in, an `Event`
+    /// out, priced from the settings file.
+    fn priced_event(platform: &AstroPlatform, frame: &str) -> yap_core::goal::Event {
+        platform.event_from_json(frame).expect("a priced event")
     }
 }

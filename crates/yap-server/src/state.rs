@@ -46,6 +46,13 @@ pub struct AppState {
     listening: RwLock<bool>,
     /// Warnings worth showing but not worth stopping for.
     warnings: RwLock<Vec<String>>,
+    /// Whether the "events are arriving but there is nothing to extend" note
+    /// has already been said for this stretch.
+    ///
+    /// Said once rather than per event: chat can be busy, and a line per cheer
+    /// would bury the whisper loading output it is trying to be noticed
+    /// against.
+    idle_event_note: std::sync::atomic::AtomicBool,
     /// Which overlay look to serve.
     ///
     /// Held here rather than read from settings at request time because the
@@ -64,6 +71,7 @@ impl AppState {
     pub fn new() -> Self {
         let (updates, _) = broadcast::channel(BROADCAST_CAPACITY);
         Self {
+            idle_event_note: std::sync::atomic::AtomicBool::new(false),
             session: RwLock::new(None),
             revision: std::sync::atomic::AtomicU64::new(0),
             updates,
@@ -213,6 +221,20 @@ impl AppState {
         let (granted, snapshot) = {
             let mut guard = self.session.write().await;
             let Some(session) = guard.as_mut() else {
+                // Chat *is* working, and the events are being thrown away.
+                // Saying so once is the difference between "this does not work"
+                // and "start a yapathon first", which is otherwise a question
+                // nobody can answer from the screen.
+                if !self
+                    .idle_event_note
+                    .swap(true, std::sync::atomic::Ordering::SeqCst)
+                {
+                    log::info!(
+                        "{} {} received, but no yapathon is running — start one and it will count",
+                        event.platform,
+                        event.kind
+                    );
+                }
                 return 0;
             };
 

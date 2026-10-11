@@ -176,7 +176,7 @@ fn field_value(settings: &yap_core::settings::Settings, field: &Field) -> String
         "accent" => settings.accent.clone(),
         "appearance" => settings.appearance.clone(),
         "overlay_theme" => settings.overlay_theme.clone(),
-        "event_twitch_sub" => words_for(settings, "twitch:sub"),
+        _ if field.key.starts_with("event_") => words_for(settings, &event_key(field.key)),
         "event_twitch_resub" => words_for(settings, "twitch:resub"),
         "event_twitch_gift_sub" => words_for(settings, "twitch:gift_sub"),
         "event_twitch_cheer" => words_for(settings, "twitch:cheer"),
@@ -209,20 +209,29 @@ fn words_for(settings: &yap_core::settings::Settings, event: &str) -> String {
 /// field name, `twitch:cheer` as the event the core prices — and deriving one
 /// from the other would tie them together until someone renamed a kind and
 /// silently repriced a cheer.
+/// The `event_words` key a field edits.
+///
+/// **By convention, not by table.** `event_<platform>_<kind>` becomes
+/// `<platform>:<kind>`. The table this replaces had to be kept in step with the
+/// schema by hand, and being out of step is silent: a field the table did not
+/// mention fell through to `other => other`, was stored under its own field
+/// name, and was then never found by anything that looks events up. That is
+/// how `event_words` ended up written faithfully and read by nothing.
+///
+/// A field that is not an event key returns itself, which is what the callers
+/// outside the Events section need.
 fn event_key(field: &str) -> String {
-    match field {
-        "event_twitch_sub" => "twitch:sub",
-        "event_twitch_resub" => "twitch:resub",
-        "event_twitch_gift_sub" => "twitch:gift_sub",
-        "event_twitch_cheer" => "twitch:cheer",
-        "event_twitch_raid" => "twitch:raid",
-        "event_twitch_redemption" => "twitch:redemption",
-        "event_chat_command" => "chat:command",
-        other => other,
-    }
-    .to_string()
-}
+    let Some(kind) = field.strip_prefix("event_") else {
+        return field.to_string();
+    };
 
+    match kind.split_once('_') {
+        Some((platform, kind)) => format!("{platform}:{kind}"),
+        // `event_foo` with no platform to split off; store it as-is rather than
+        // inventing a key for it.
+        None => field.to_string(),
+    }
+}
 fn bool_text(value: bool) -> String {
     if value { "true" } else { "false" }.to_string()
 }
@@ -1076,15 +1085,13 @@ fn apply_field(settings: &mut yap_core::settings::Settings, field: &Field, raw: 
         "accent" => settings.accent = trimmed.to_lowercase(),
         "appearance" => settings.appearance = trimmed.to_lowercase(),
         "overlay_theme" => settings.overlay_theme = trimmed.to_lowercase(),
-        "event_twitch_sub"
-        | "event_twitch_resub"
-        | "event_twitch_gift_sub"
-        | "event_twitch_cheer"
-        | "event_twitch_raid"
-        | "event_twitch_redemption"
-        | "event_chat_command" => {
+        _ if field.key.starts_with("event_") => {
             let event = event_key(field.key);
             if trimmed.is_empty() {
+                // A blank box is a decision to stop that event extending the
+                // goal, so the price is removed rather than kept. Silently
+                // keeping the old value would leave chat able to move a number
+                // the streamer believes is fixed.
                 settings.event_words.remove(&event);
             } else if let Ok(words) = trimmed.parse::<u32>() {
                 settings.event_words.insert(event, words);
@@ -1705,10 +1712,17 @@ mod tests {
 
     #[test]
     fn every_event_the_core_prices_has_a_field() {
-        // The pricing map and the settings form are two lists of the same thing.
-        // An event with a price but no field means a streamer can read the
-        // number and not change it — the same shape of bug as the dead tab: a
-        // control that shows a value and refuses to do anything with it.
+        // One direction only, and the direction that matters: **a price with no
+        // field** means a streamer can read the number in their settings file and
+        // not change it — the same shape of bug as the dead tab, a control that
+        // shows a value and refuses to do anything with it.
+        //
+        // The reverse is *not* a fault. A field with no price is a field nobody
+        // has set yet: it shows blank, and a blank box means "worth nothing",
+        // which is the safe default and the honest one. Asserting otherwise
+        // would force a made-up price onto every event the app can emit, and a
+        // Super Chat priced at some invented rate is a worse thing than an
+        // unpriced one the streamer has to fill in deliberately.
         let mut unpriced_fields = Settings::default().event_words;
 
         for section in SETTINGS_SECTIONS {
@@ -1719,17 +1733,71 @@ mod tests {
 
                 let event = event_key(field.key);
                 assert!(
-                    unpriced_fields.remove(&event).is_some(),
-                    "{} prices {event:?}, which the core has no default for",
+                    !event.is_empty(),
+                    "{} produced an empty event key",
                     field.key,
                 );
+                unpriced_fields.remove(&event);
             }
         }
 
         assert!(
             unpriced_fields.is_empty(),
-            "the core prices these but nothing can change them: {unpriced_fields:?}",
+            "the core prices these but nothing in the panel can change them: \
+             {unpriced_fields:?}",
         );
+    }
+
+    #[test]
+    fn every_platform_the_app_can_receive_from_has_an_events_field() {
+        // The complaint that prompted this: the panel listed Twitch and nothing
+        // else, so there was no way to price a Super Chat or a YouTube
+        // subscriber from the UI even though both were arriving.
+        //
+        // Checked by platform rather than by event, because a platform with one
+        // priceable kind is enough — the failure was a platform with none.
+        for platform in ["twitch", "youtube", "kick"] {
+            let priced: Vec<&str> = SETTINGS_SECTIONS
+                .iter()
+                .flat_map(|section| section.fields.iter())
+                .filter(|field| field.key.starts_with("event_"))
+                .filter(|field| event_key(field.key).starts_with(&format!("{platform}:")))
+                .map(|field| field.key)
+                .collect();
+
+            assert!(
+                !priced.is_empty(),
+                "the panel offers no price for {platform} events, so nothing the app \
+                 receives from {platform} can extend a goal",
+            );
+        }
+    }
+
+    #[test]
+    fn an_event_field_never_edits_a_price_under_its_own_name() {
+        // The failure mode of the table this replaced: a field not mentioned in
+        // it fell through to `other => other` and was stored under its own field
+        // key, where nothing looks events up. It read and wrote faithfully and
+        // did nothing — the original `event_words` bug, one level down.
+        for section in SETTINGS_SECTIONS {
+            for field in section.fields {
+                if !field.key.starts_with("event_") {
+                    continue;
+                }
+
+                let event = event_key(field.key);
+                assert_ne!(
+                    event, field.key,
+                    "{} stores under its own name, so no lookup can ever find it",
+                    field.key,
+                );
+                assert!(
+                    event.contains(':'),
+                    "{} produced {event:?}, which is not a <platform>:<kind> key",
+                    field.key,
+                );
+            }
+        }
     }
 
     #[test]

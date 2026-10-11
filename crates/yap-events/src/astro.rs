@@ -30,6 +30,14 @@
 //! StreamElements marks simulated activity with `isMock: true` — the widget
 //! editor's "test" button produces it. Counting those would mean a yapathon
 //! could be extended by a cheer nobody sent, so they are ignored outright.
+//!
+//! `YAP_ALLOW_MOCK_EVENTS=1` counts them anyway, for testing the whole chain
+//! end to end without real viewers. An environment variable rather than a
+//! setting because `settings.toml` is exactly the file that gets synced to a
+//! streaming machine and pasted into support threads — a test switch does not
+//! belong in one. Anything accepted this way is relabelled `(mock)` so it is
+//! visible as fake in the overlay, the dock and the window rather than
+//! indistinguishable from something a viewer actually did.
 
 use std::collections::VecDeque;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -86,6 +94,65 @@ impl AstroAccount {
     }
 }
 
+/// Whether to count simulated events, for local testing.
+///
+/// Read once. An environment variable rather than a setting, because this is a
+/// switch that must never travel to a streaming machine and the one place that
+/// travels is the settings file.
+static ALLOW_MOCK: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+
+/// Whether simulated events are being counted.
+///
+/// Public so the app can ask at startup, not only when one arrives: the warning
+/// that a build is counting fake cheers is worth reading before a stream rather
+/// than after the first one has been counted.
+pub fn mock_events_allowed() -> bool {
+    allow_mock_events()
+}
+
+fn allow_mock_events() -> bool {
+    *ALLOW_MOCK.get_or_init(|| {
+        let on = std::env::var("YAP_ALLOW_MOCK_EVENTS").is_ok_and(|v| !v.is_empty() && v != "0");
+
+        if on {
+            // Loud, and on every connect, because the failure this guards
+            // against is a test session that quietly includes fake cheers and is
+            // then believed.
+            log::warn!(
+                "astro: YAP_ALLOW_MOCK_EVENTS is set — simulated events will be counted. \
+                 Anything they add is labelled (mock) so it can be told apart. \
+                 Unset it before streaming."
+            );
+        }
+
+        on
+    })
+}
+
+/// Event kinds already reported as unpriced.
+///
+/// One line per kind rather than per event: chat can be busy, and a line per
+/// cheer would bury the whisper loading output it is trying to be noticed
+/// against.
+static UNPRICED_NOTED: std::sync::OnceLock<std::sync::Mutex<std::collections::HashSet<String>>> =
+    std::sync::OnceLock::new();
+
+fn note_unpriced_once(key: &str) {
+    let set = UNPRICED_NOTED.get_or_init(Default::default);
+
+    let Ok(mut seen) = set.lock() else {
+        return;
+    };
+    if !seen.insert(key.to_string()) {
+        return;
+    }
+
+    log::warn!(
+        "{key} has no price, so it grants nothing. Set one in Settings -> Events, or \
+         blank it to mean 'this event does not move the goal'."
+    );
+}
+
 /// How many activity ids to remember for deduplication.
 ///
 /// A yapathon that counts one cheer twice is the same failure as one that drops
@@ -120,6 +187,21 @@ impl AstroPlatform {
             stopped: AtomicBool::new(false),
             wake: Notify::new(),
         }
+    }
+
+    /// Parse and price one `channel.activities` frame.
+    ///
+    /// The read loop is the only caller that matters, but exposing this means a
+    /// test can hand in a captured frame and get an `Event` back without the
+    /// wire types becoming public — they are an implementation detail of the
+    /// gateway's shape, not part of this module's contract.
+    ///
+    /// Returns `None` for anything unparseable or not a priced activity, which
+    /// is the same answer the read loop gives.
+    pub fn event_from_json(&self, json: &str) -> Option<Event> {
+        let frame: Frame = serde_json::from_str(json).ok()?;
+        let activity = frame.data.as_ref().and_then(FrameData::activity)?;
+        self.to_event(&activity)
     }
 
     /// Whether this activity has already been counted.
@@ -270,7 +352,7 @@ impl AstroPlatform {
                         continue;
                     };
 
-                    if activity.is_mock {
+                    if activity.is_mock && !allow_mock_events() {
                         log::debug!(
                             "astro: ignoring a simulated {} event from {}",
                             activity.kind,
@@ -326,15 +408,36 @@ impl AstroPlatform {
     fn to_event(&self, activity: &Activity<'_>) -> Option<Event> {
         let (kind, amount) = shape(activity)?;
 
-        Some(price_event(
+        let configured = self
+            .pricing
+            .get(&format!("{}:{kind}", activity.provider))
+            .copied();
+
+        // An event with no price is indistinguishable on the overlay from an
+        // event that never arrived — which is the same "nothing happened" the
+        // empty Events section already caused once, and the same silence that
+        // hid a discarded session.
+        if configured.is_none() {
+            note_unpriced_once(&format!("{}:{kind}", activity.provider));
+        }
+
+        let mut event = price_event(
             activity.provider,
             kind,
             Some(activity.data.user()),
             amount,
-            self.pricing
-                .get(&format!("{}:{kind}", activity.provider))
-                .copied(),
-        ))
+            configured,
+        );
+
+        // Relabelled *after* pricing, so the words are right and the label is
+        // honest. `kind` is display only — `apply_event` reads `words` and
+        // nothing else — which is what makes this safe. A test session that
+        // cannot be told apart from a real one is worse than no test mode.
+        if activity.is_mock {
+            event.kind = format!("{kind} (mock)");
+        }
+
+        Some(event)
     }
 }
 

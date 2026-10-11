@@ -27,6 +27,11 @@ fn platform() -> AstroPlatform {
 }
 
 /// Price a captured frame, exactly as the read loop does.
+///
+/// Every captured frame here is `isMock: true`, because that is all the widget
+/// simulator produces — so events come back labelled `(mock)`. The words are
+/// identical either way; only the label differs, and the tests that care about
+/// labelling say so.
 fn event_from(frame: &str) -> Option<Event> {
     let frame: Frame = serde_json::from_str(frame).ok()?;
     let activity = frame.data.as_ref().and_then(FrameData::activity)?;
@@ -72,7 +77,10 @@ fn a_gift_bomb_is_worth_its_count_and_not_a_single_gift() {
     // flat, so a hundred gifted subs moved the goal by the same amount as one.
     let event = event_from(TWITCH_GIFT_BOMB).expect("a priced event");
 
-    assert_eq!(event.kind, "gift_sub");
+    assert_eq!(
+        event.kind, "gift_sub (mock)",
+        "captured frames are simulated"
+    );
     assert_eq!(event.amount, Some(10.0));
     assert_eq!(event.words, Some(250), "10 gifts × 25 words each");
 }
@@ -81,7 +89,10 @@ fn a_gift_bomb_is_worth_its_count_and_not_a_single_gift() {
 fn a_superchat_is_worth_what_was_actually_spent() {
     let event = event_from(YOUTUBE_SUPERCHAT).expect("a priced event");
 
-    assert_eq!(event.kind, "superchat");
+    assert_eq!(
+        event.kind, "superchat (mock)",
+        "captured frames are simulated"
+    );
     assert_eq!(event.words, Some(10), "1 unit of money × 10 words");
 }
 
@@ -92,7 +103,10 @@ fn a_youtube_subscriber_is_an_event_a_native_youtube_channel_never_sees() {
     // any form, so reaching this at all is the point.
     let event = event_from(YOUTUBE_SUBSCRIBER).expect("a priced event");
 
-    assert_eq!(event.kind, "subscriber");
+    assert_eq!(
+        event.kind, "subscriber (mock)",
+        "captured frames are simulated"
+    );
     assert_eq!(event.amount, None, "flat: one subscriber is one subscriber");
     assert_eq!(
         event.words,
@@ -107,8 +121,14 @@ fn a_youtube_membership_is_not_a_subscriber() {
     // event list and one is money while the other is not.
     let membership = event_from(YOUTUBE_SPONSOR).expect("a priced event");
 
-    assert_eq!(membership.kind, "membership");
-    assert_ne!(membership.kind, "subscriber");
+    assert_eq!(
+        membership.kind, "membership (mock)",
+        "captured frames are simulated"
+    );
+    assert_ne!(
+        membership.kind, "subscriber (mock)",
+        "a membership and a subscriber look alike in the event list, and one is money",
+    );
     assert_eq!(
         membership.amount, None,
         "flat unless the streamer prices by tier"
@@ -192,6 +212,116 @@ fn a_merch_basket_is_worth_what_it_actually_cost() {
         "a 34.97 basket should be worth 34.97, got {:?}",
         amount,
     );
+}
+
+#[test]
+fn an_accepted_mock_is_priced_correctly_and_labelled_as_fake() {
+    // The local testing mode. Two things have to be true at once, and they pull
+    // against each other: the words must be right, because the point is testing
+    // the chain, and the label must say the event is fake, because a test
+    // session indistinguishable from a real one is worse than no test mode.
+    //
+    // So the relabelling happens *after* pricing — `kind` is display only, and
+    // `apply_event` reads `words` and nothing else.
+    let frame = r#"{"type":"message","topic":"channel.activities",
+      "data":{"type":"cheer","provider":"twitch","isMock":true,
+        "data":{"displayName":"Someone","amount":2500}}}"#;
+
+    let parsed: Frame = serde_json::from_str(frame).unwrap();
+    let activity = parsed.data.as_ref().and_then(FrameData::activity).unwrap();
+
+    let event = platform().to_event(&activity).expect("priced");
+
+    assert_eq!(event.words, Some(2500), "2500 bits × 1 word per bit");
+    assert_eq!(event.platform, "twitch", "still priced as Twitch");
+    assert_eq!(
+        event.kind, "cheer (mock)",
+        "and visibly not something a viewer sent",
+    );
+}
+
+#[test]
+fn a_real_event_is_not_labelled_as_a_mock() {
+    let frame = r#"{"type":"message","topic":"channel.activities",
+      "data":{"type":"cheer","provider":"twitch",
+        "data":{"displayName":"Someone","amount":2500}}}"#;
+
+    let parsed: Frame = serde_json::from_str(frame).unwrap();
+    let activity = parsed.data.as_ref().and_then(FrameData::activity).unwrap();
+
+    let event = platform().to_event(&activity).expect("priced");
+
+    assert_eq!(
+        event.kind, "cheer",
+        "a real event must never be dressed up as a test one",
+    );
+}
+
+#[test]
+fn a_captured_payload_reaches_a_running_session_as_words() {
+    // The whole chain, which no test above covers: a real captured frame, shaped,
+    // priced, handed to a session, and landing as words on the goal.
+    //
+    // The gap this closes is real. Every other test here stops at the `Event`,
+    // and the session half was only ever exercised by chat commands — so a
+    // payload arriving, being shaped and priced correctly, and then going
+    // nowhere would look identical to a working integration from every angle
+    // except "does the number move".
+    let frame = r#"{"type":"message","topic":"channel.activities",
+      "data":{"type":"cheer","provider":"twitch","isMock":true,
+        "data":{"displayName":"Someone","amount":2500}}}"#;
+
+    let parsed: Frame = serde_json::from_str(frame).unwrap();
+    let activity = parsed.data.as_ref().and_then(FrameData::activity).unwrap();
+
+    let event = platform().to_event(&activity).expect("priced");
+    assert_eq!(event.words, Some(2500));
+
+    // Extend, not Fixed. In Fixed an event adds score and the goal stays put,
+    // which is that mode's whole meaning — pinned by the test below.
+    let mut session = yap_core::session::Session::new(yap_core::session::SessionConfig::new(
+        yap_core::goal::GoalMode::Extend { base_words: 10_000 },
+        None,
+    ));
+    session.start();
+
+    let granted = session.apply_event(&event);
+    assert_eq!(granted, 2500, "the cheer moved the goal");
+
+    let snapshot = session.snapshot();
+    assert_eq!(snapshot.target, 12_500, "and extended the finish line");
+    assert_eq!(snapshot.bonus_total, 2500, "counted as coming from chat");
+    assert_eq!(
+        snapshot.words, 0,
+        "and kept apart from what was spoken, which is why the two exist separately",
+    );
+}
+
+#[test]
+fn a_fixed_yapathon_leaves_the_finish_line_alone_and_scores_instead() {
+    // The second way "nothing happened" turns out to be reachable, and from the
+    // overlay it looks identical to a broken integration: a number that does not
+    // move. In fixed mode events add score and never goal — that is the mode's
+    // meaning, not a fault — but it is worth pinning so it is rediscovered as
+    // design rather than as a bug.
+    let frame = r#"{"type":"message","topic":"channel.activities",
+      "data":{"type":"cheer","provider":"twitch","isMock":true,
+        "data":{"displayName":"Someone","amount":2500}}}"#;
+
+    let parsed: Frame = serde_json::from_str(frame).unwrap();
+    let activity = parsed.data.as_ref().and_then(FrameData::activity).unwrap();
+    let event = platform().to_event(&activity).expect("priced");
+
+    let mut session = yap_core::session::Session::new(yap_core::session::SessionConfig::new(
+        yap_core::goal::GoalMode::Fixed { words: 10_000 },
+        None,
+    ));
+    session.start();
+    session.apply_event(&event);
+
+    let snapshot = session.snapshot();
+    assert_eq!(snapshot.target, 10_000, "the finish line does not move");
+    assert_eq!(snapshot.score, 2500, "the event is worth score instead");
 }
 
 #[test]
@@ -447,4 +577,33 @@ fn sub_with(months: f64, streak: u32) -> Activity<'static> {
         })),
         ..activity("twitch", "subscriber", Some(months))
     }
+}
+#[test]
+fn debug_extend() {
+    use yap_core::goal::{Event, GoalMode};
+    use yap_core::session::{Session, SessionConfig};
+    let ev = Event {
+        platform: "twitch".into(),
+        kind: "cheer".into(),
+        user: None,
+        amount: Some(2500.0),
+        words: Some(2500),
+        note: None,
+    };
+    let mut s = Session::new(SessionConfig::new(
+        GoalMode::Extend { base_words: 10_000 },
+        None,
+    ));
+    s.start();
+    let snap = s.snapshot();
+    eprintln!(
+        "before: target={} words={} capped={}",
+        snap.target, snap.words, snap.capped
+    );
+    let g = s.apply_event(&ev);
+    let snap = s.snapshot();
+    eprintln!(
+        "granted={} after: target={} words={} bonus={}",
+        g, snap.target, snap.words, snap.bonus_total
+    );
 }

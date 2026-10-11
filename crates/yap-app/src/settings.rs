@@ -269,59 +269,109 @@ const SERVER: &[Field] = &[
     },
 ];
 
+/// An event price field.
+///
+/// A `const fn` rather than a spelled-out `Field` twenty times, because the
+/// shape is identical for every event and the only things that differ are the
+/// three strings.
+const fn event_field(key: &'static str, label: &'static str, help: &'static str) -> Field {
+    Field {
+        key,
+        label,
+        kind: FieldKind::Text,
+        options: &[],
+        help: Some(help),
+    }
+}
+
+/// What one event is worth, in words.
+///
+/// Empty means "worth nothing", which is different from "unpriced": a blank
+/// box is a decision, and an unpriced event grants nothing either way.
+///
+/// Every kind the app can emit, for every platform it can emit it from. The
+/// list is here rather than derived, because `SETTINGS_SECTIONS` is a `const`
+/// and a field per event is what makes a price reachable at all — the previous
+/// list covered Twitch only, so there was no way to price a Super Chat or a
+/// YouTube subscriber from the panel even though both arrived.
+///
+/// Blank fields cost nothing: they are removed from `event_words` on save
+/// rather than stored as a zero.
 const EVENTS: &[Field] = &[
-    Field {
-        key: "event_twitch_sub",
-        label: "New subscriber",
-        kind: FieldKind::Int,
-        options: &[],
-        help: Some("words a first-time sub adds to the goal"),
-    },
-    Field {
-        key: "event_twitch_resub",
-        label: "Resubscribe",
-        kind: FieldKind::Int,
-        options: &[],
-        help: Some("words someone renewing their sub adds"),
-    },
-    Field {
-        key: "event_twitch_gift_sub",
-        label: "Gifted sub (each)",
-        kind: FieldKind::Int,
-        options: &[],
-        help: Some(
-            "per sub gifted, so a hundred gifted subs are worth a hundred of these — \
-             Twitch sends a gift bomb as one event carrying a quantity",
-        ),
-    },
-    Field {
-        key: "event_twitch_cheer",
-        label: "Cheer (per bit)",
-        kind: FieldKind::Int,
-        options: &[],
-        help: Some("100 bits is a dollar, so this is usually 1"),
-    },
-    Field {
-        key: "event_twitch_raid",
-        label: "Raider",
-        kind: FieldKind::Int,
-        options: &[],
-        help: None,
-    },
-    Field {
-        key: "event_twitch_redemption",
-        label: "Channel redemption",
-        kind: FieldKind::Int,
-        options: &[],
-        help: None,
-    },
-    Field {
-        key: "event_chat_command",
-        label: "Chat !command",
-        kind: FieldKind::Int,
-        options: &[],
-        help: Some("what typing a command in chat is worth"),
-    },
+    // -- Twitch, from either EventSub or Astro ----------------------------
+    event_field("event_twitch_follow", "Follower", "each one, flat"),
+    event_field("event_twitch_sub", "New subscriber", "first month, flat"),
+    event_field(
+        "event_twitch_resub",
+        "Resubscribe",
+        "any month after the first",
+    ),
+    event_field(
+        "event_twitch_gift_sub",
+        "Gifted sub (each)",
+        "scales with the size of the gift",
+    ),
+    event_field(
+        "event_twitch_cheer",
+        "Cheer (per bit)",
+        "2500 bits is worth 2500 of these",
+    ),
+    event_field(
+        "event_twitch_raid",
+        "Raid (per raider)",
+        "scales with how many came",
+    ),
+    event_field(
+        "event_twitch_host",
+        "Host (per viewer)",
+        "scales with how many came",
+    ),
+    event_field("event_twitch_redemption", "Redemption", "each one, flat"),
+    event_field(
+        "event_twitch_tip",
+        "Tip (per unit)",
+        "streams without native tips still have these",
+    ),
+    event_field(
+        "event_twitch_merch",
+        "Merch (per unit)",
+        "the basket's total",
+    ),
+    // -- YouTube, from Astro ---------------------------------------------
+    event_field(
+        "event_youtube_subscriber",
+        "Channel subscriber",
+        "someone pressing Subscribe. The YouTube API cannot report this at \
+         all; only Astro can",
+    ),
+    event_field(
+        "event_youtube_membership",
+        "Channel membership",
+        "a paid member joining, which is not the same as subscribing",
+    ),
+    event_field(
+        "event_youtube_superchat",
+        "Super Chat (per unit)",
+        "what was spent. No currency comes with it, so a price in anything \
+         other than the channel's own currency is off by the exchange rate",
+    ),
+    event_field("event_youtube_tip", "Tip (per unit)", "what was spent"),
+    event_field(
+        "event_youtube_merch",
+        "Merch (per unit)",
+        "the basket's total",
+    ),
+    // -- Kick, from Astro -------------------------------------------------
+    event_field("event_kick_follow", "Follower", "each one, flat"),
+    event_field("event_kick_sub", "Subscriber", "each one, flat"),
+    event_field(
+        "event_kick_kicks",
+        "KICKs gift (each)",
+        "scales with the gift",
+    ),
+    event_field("event_kick_tip", "Tip (per unit)", "what was spent"),
+    // -- Anything, from chat ----------------------------------------------
+    event_field("event_chat_command", "Chat !command", "someone typing !yap"),
 ];
 
 /// Every setting, grouped.

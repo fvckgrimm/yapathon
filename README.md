@@ -355,18 +355,33 @@ The **Events** section prices every kind of chat event in words. This is the
 number chat moves the goal by, so it is worth setting deliberately rather than
 leaving whatever the defaults happen to be.
 
+Prices are keyed `<platform>:<kind>`, so `twitch:cheer` means the same thing
+whether it arrived through Twitch's own EventSub or through StreamElements, and
+switching source does not re-price anything. The panel lists **twitch**,
+**youtube** and **kick**.
+
 | Setting | Default | Notes |
 | ------- | ------- | ----- |
 | New subscriber | 100 | one sub, one award |
 | Resubscribe | 100 | one resub, one award — **not** multiplied by months |
 | Gifted sub (each) | 50 | **per sub**, not per gift |
 | Cheer (per bit) | 1 | 100 bits is a dollar, so 1 keeps a cheer meaningful |
-| Raider | 250 | |
+| Raider | 250 | per raider |
 | Channel redemption | 100 | |
 | Chat `!command` | 100 | |
+| Follower, host, tip, merch | *(blank)* | |
+| YouTube subscriber | *(blank)* | only StreamElements can report this at all |
+| YouTube membership | *(blank)* | a paid member joining — not the same as subscribing |
+| YouTube Super Chat | *(blank)* | per unit spent; **no currency arrives with it** |
+| Kick follower, sub, KICKs, tip | *(blank)* | |
 
-The two per-unit rows are the ones that used to be wrong, and they are wrong in a
-way that is only visible during a big event. Twitch sends a gift bomb as **one**
+The rows left blank are blank on purpose. They are the kinds the app can receive
+but nothing has a sensible default for, and a Super Chat priced at an invented
+rate is worse than an unpriced one you fill in deliberately. Unset them and the
+app says so once rather than letting the goal quietly fail to move.
+
+The two per-unit rows that *are* set used to be wrong, and they were wrong in a
+way only visible during a big event. Twitch sends a gift bomb as **one**
 notification carrying a quantity, and the amount was never read off the payload —
 so a hundred gifted subs extended the goal by exactly what one gifted sub did.
 A cheer had the same problem. Both now scale, and there are tests that pin it.
@@ -538,9 +553,26 @@ log and as a warning in the window — clear the native Twitch settings to hand
 that platform to Astro instead. Astro is still worth adding for the platforms
 native cannot cover.
 
-The payloads were measured against the widget simulator, not real traffic; see
-[`tools/astro-probe`](tools/astro-probe/README.md). The connection itself has
-been verified live.
+### Testing it without viewers
+
+```sh
+YAP_ALLOW_MOCK_EVENTS=1 cargo run --release
+```
+
+StreamElements' widget simulator produces test events. Counting those would let a
+cheer nobody sent move the goal, so they are normally dropped — this counts them
+anyway, for checking the whole chain end to end without waiting for a raid.
+
+Anything it accepts is labelled `(mock)` in the event feed, so it can never be
+mistaken for something a viewer did. It is an environment variable rather than a
+setting because `settings.toml` is exactly the file that gets synced to a
+streaming machine and pasted into support threads, and it warns at launch.
+
+**Unset it before streaming.**
+
+The payloads were measured against the widget simulator; the connection and the
+full chain — payload to priced event to a goal that moves — have been verified
+against it. See [`tools/astro-probe`](tools/astro-probe/README.md).
 
 ### Chat commands
 
@@ -608,13 +640,19 @@ an argument.
 ## Status
 
 Working: counting, all three goal modes and the hard limit, the audit log, undo
-and the three correction shapes, chat commands, per-event pricing, the live
-microphone picker, the model file chooser, click-to-copy overlay URL, the local
-API, the dock, the overlay, the settings panel, and the in-app credential prompt.
+and the three correction shapes, chat commands, per-event pricing across twitch,
+youtube and kick, the live microphone picker, the model file chooser,
+click-to-copy overlay URL, the local API, the dock, the overlay, the settings
+panel, the in-app credential prompt, and StreamElements Astro.
 
-Not yet: Twitch EventSub runs but has not been tested against a live channel;
-there is no model download or first-run wizard; session history is not persisted
-between runs; YouTube is planned but not built ([`docs/youtube.md`](docs/youtube.md)).
+Verified end to end: a yapathon counted live speech while its goal was extended
+by chat from both platforms at once, with per-bit cheers and per-unit Super Chats
+scaling correctly.
+
+Not yet: no event has come from a real viewer rather than the simulator; there is
+no model download or first-run wizard; session history is not persisted between
+runs; native YouTube is not built, though Astro covers the ground
+([`docs/youtube.md`](docs/youtube.md)).
 
 Verified by test rather than by eye:
 
