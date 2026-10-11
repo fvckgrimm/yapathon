@@ -108,9 +108,14 @@ pub fn default_appearance() -> String {
     "auto".to_string()
 }
 
-/// The overlay theme used when the file does not say.
+/// The overlay palette used when the file does not say.
 pub fn default_overlay_theme() -> String {
     "card".to_string()
+}
+
+/// The overlay shape used when the file does not say.
+pub fn default_overlay_style() -> String {
+    "corner".to_string()
 }
 
 /// Everything the app remembers between runs.
@@ -145,12 +150,25 @@ pub struct Settings {
     #[serde(default = "default_appearance")]
     pub appearance: String,
 
-    /// Which overlay look OBS is served.
+    /// Which overlay palette OBS is served.
     ///
     /// Overridable per-request with `?theme=` so a streamer can compare looks in
     /// a browser before copying one into their scene.
+    ///
+    /// A file written before the two axes existed holds a *combined* name here —
+    /// `strip`, `big` — which are shapes rather than palettes. `legacy_look`
+    /// maps those to the pair that reproduces what they used to show, so
+    /// upgrading cannot change somebody's overlay mid-stream.
     #[serde(default = "default_overlay_theme")]
     pub overlay_theme: String,
+
+    /// Which overlay shape OBS is served.
+    ///
+    /// Separate from the palette because the two are chosen independently: any
+    /// colour works in any shape, which is what makes a slim catppuccin overlay
+    /// possible without anyone writing it.
+    #[serde(default = "default_overlay_style")]
+    pub overlay_style: String,
 
     /// Counting rules applied to new sessions.
     pub rules: CountingRules,
@@ -226,6 +244,7 @@ impl Default for Settings {
             accent: default_accent(),
             appearance: default_appearance(),
             overlay_theme: default_overlay_theme(),
+            overlay_style: default_overlay_style(),
             rules: CountingRules::default(),
             default_mode: GoalMode::Extend { base_words: 5000 },
             default_hard_limit: Some(10_000),
@@ -878,6 +897,43 @@ mod tests {
         fn drop(&mut self) {
             let _ = std::fs::remove_dir_all(&self.0);
         }
+    }
+    #[test]
+    fn a_file_written_before_the_two_axes_still_loads() {
+        // Someone upgrades with a `settings.toml` already on disk. It has
+        // `overlay_theme` and no `overlay_style`, because the key did not exist
+        // when they wrote it.
+        //
+        // The absence has to become the *default* and not an error, or the app
+        // refuses to start for anyone who already had a settings file — and it
+        // has to keep holding the combined name verbatim, because `strip` and
+        // `big` are shapes now, and resolving it here would throw away which axis
+        // it named.
+        let dir = std::env::temp_dir().join("yap-migration-probe");
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        let path = dir.join("settings.toml");
+        std::fs::write(
+            &path,
+            "bind_address = \"127.0.0.1\"\noverlay_theme = \"strip\"\n",
+        )
+        .expect("write");
+
+        let settings = load(&path).expect("an old file must still load");
+
+        assert_eq!(
+            settings.overlay_theme, "strip",
+            "the combined name must survive the read — the server maps it to a pair"
+        );
+        // Struct-level `#[serde(default)]` is what supplies this, not the
+        // per-field attribute — but either way it must be a value, not an error,
+        // or the app refuses to start for anyone who already had a file.
+        assert_eq!(
+            settings.overlay_style,
+            default_overlay_style(),
+            "a missing key takes the default rather than failing",
+        );
+
+        std::fs::remove_file(&path).ok();
     }
 
     #[test]

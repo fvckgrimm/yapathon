@@ -50,6 +50,18 @@ const OVERLAY_HTML: &str = r##"<!doctype html>
     --corner-y: 2rem;
     --glow: none;
     --font: ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+    /* The style defaults live here too, matching the `card` palette above, so
+       a page with neither attribute set still renders the corner look. Every
+       palette rule and every style rule repeats its own half of this, which is
+       what lets the two axes be set independently. */
+    --pad-y: 1.25rem;
+    --pad-x: 1.5rem;
+    --min-width: 16rem;
+    --count-size: 3.5rem;
+    --count-weight: 700;
+    --count-spacing: normal;
+    --corner-x: 2rem;
+    --corner-y: 2rem;
   }
   * { box-sizing: border-box; }
   html, body {
@@ -170,8 +182,20 @@ const OVERLAY_HTML: &str = r##"<!doctype html>
      A theme may not introduce `filter`, `text-shadow`, `backdrop-filter`,
      `mix-blend-mode` or `clip-path`. See the note above; there is a test. */
 
+  /* --- Palettes: colour, and nothing else ---------------------------------
+
+     Each rule below sets colours, a font, and the *character* of the shape —
+     rounded or square, a glow, a pill bar. It never sets where the card sits,
+     how big the number is, or how much padding there is. That is what lets a
+     palette be paired with any style: a slim catppuccin overlay exists because
+     the two axes do not know about each other.
+
+     A palette may not set `--pad-y`, `--count-size`, `--min-width`,
+     `--corner-x` or `--corner-y`. Those belong to the style, and a palette that
+     set one would silently defeat it — there is a test. */
+
   /* Card: the default, spelled out rather than left to the `:root` values.
-     Repeating them costs nothing and means every theme has a rule of its own —
+     Repeating them costs nothing and means every palette has a rule of its own —
      which is what lets a test check that the stylesheet and the Rust table
      agree, rather than one of them drifting silently. */
   body[data-theme="card"] {
@@ -186,34 +210,24 @@ const OVERLAY_HTML: &str = r##"<!doctype html>
     --radius: 0.75rem;
   }
 
-  /* Minimal: the same information with nothing decorative. Square corners, no
-     border, tighter type, dimmer secondary text, and moved to the top-left
-     because a small block reads better there than tucked into a corner. The
-     card keeps a solid backing — white text over video with no plate behind it
-     is unreadable a good fraction of the time, and legibility is the one thing
-     a minimal theme is not allowed to trade away. */
+  /* Minimal: near-black, cool blue, square corners and no border. The card
+     keeps a solid backing — white text over video with no plate behind it is
+     unreadable a good fraction of the time, and legibility is the one thing a
+     minimal look is not allowed to trade away. */
   body[data-theme="minimal"] {
     --card: rgba(8, 8, 12, 0.86);
     --card-solid: #08080c;
     --card-border: none;
     --radius: 0.25rem;
-    --pad-y: 0.75rem;
-    --pad-x: 1rem;
-    --min-width: 12rem;
-    --count-size: 2.5rem;
-    --count-weight: 600;
     --fg: #fafafa;
     --dim: #8b8b94;
     --accent: #7dd3fc;
+    --warn: #fbbf24;
+    --capped: #f87171;
     --track: rgba(255, 255, 255, 0.14);
-    --corner-x: auto;
-    --corner-y: auto;
-    left: 2rem;
-    top: 2rem;
-    bottom: auto;
   }
 
-  /* Cute: pastel, pill-shaped, deliberately soft. The lightest theme, which
+  /* Cute: pastel, pill-shaped, deliberately soft. The lightest palette, which
      means it is the one most at risk over a bright stream — hence a card that
      is nearly opaque. The accent is a deep rose rather than a pale pink
      because a pale pink on a pale pink card is decoration, not a number. */
@@ -222,12 +236,6 @@ const OVERLAY_HTML: &str = r##"<!doctype html>
     --card-solid: #fff5fb;
     --card-border: 2px solid rgba(196, 65, 127, 0.35);
     --radius: 1.75rem;
-    --pad-y: 1.5rem;
-    --pad-x: 1.75rem;
-    --min-width: 18rem;
-    --count-size: 3.75rem;
-    --count-weight: 800;
-    --count-spacing: -0.02em;
     --fg: #4a2c47;
     --dim: #75506f;
     --accent: #c2417f;
@@ -241,18 +249,13 @@ const OVERLAY_HTML: &str = r##"<!doctype html>
 
   /* Neon: near-black, hard corners, one electric accent and a glow. The glow is
      a `box-shadow` rather than a `text-shadow` on purpose — see the note on
-     `.count`. This is the theme most likely to be paired with a dark, neon
+     `.count`. This is the palette most likely to be paired with a dark, neon
      scene, where it disappears into it by design. */
   body[data-theme="neon"] {
     --card: rgba(4, 4, 10, 0.94);
     --card-solid: #04040a;
     --card-border: 1px solid rgba(0, 229, 255, 0.45);
     --radius: 0.125rem;
-    --pad-y: 1rem;
-    --pad-x: 1.25rem;
-    --count-size: 3.25rem;
-    --count-weight: 800;
-    --count-spacing: 0.01em;
     --fg: #f0f6ff;
     --dim: #7c8aa5;
     --accent: #00e5ff;
@@ -264,19 +267,14 @@ const OVERLAY_HTML: &str = r##"<!doctype html>
     --font: "JetBrains Mono", ui-monospace, "Cascadia Mono", Menlo, monospace;
   }
 
-  /* Mono: greyscale and small, for a channel whose brand is already loud. Every
-     colour is a grey, including the accent — the bar still fills, it just does
-     not draw attention to itself doing it. */
+  /* Mono: greyscale, for a channel whose brand is already loud. Every colour is
+     a grey, including the accent — the bar still fills, it just does not draw
+     attention to itself doing it. */
   body[data-theme="mono"] {
     --card: rgba(17, 17, 17, 0.9);
     --card-solid: #111111;
     --card-border: 1px solid rgba(255, 255, 255, 0.14);
     --radius: 0.5rem;
-    --pad-y: 0.875rem;
-    --pad-x: 1.25rem;
-    --min-width: 14rem;
-    --count-size: 2.75rem;
-    --count-weight: 600;
     --fg: #ededed;
     --dim: #9a9a9a;
     --accent: #ededed;
@@ -287,50 +285,119 @@ const OVERLAY_HTML: &str = r##"<!doctype html>
     --font: ui-monospace, "JetBrains Mono", Menlo, Consolas, monospace;
   }
 
-  /* --- The two that change the shape, not the colour ------------------------
+  /* Catppuccin Mocha: the most-used of the four catppuccin flavours, and the
+     one people mean when they say catppuccin. Pastel over a warm dark base, with
+     the mauve as the accent because green on mauve is the pairing the theme is
+     known for. `mauve` and `overlay2` are its own named colours — taken from
+     the published palette rather than eyeballed, so it matches what someone
+     expects from the name. */
+  body[data-theme="catppuccin-mocha"] {
+    --card: rgba(30, 30, 46, 0.92);
+    --card-solid: #1e1e2e;
+    --card-border: 1px solid rgba(166, 173, 200, 0.22);
+    --radius: 0.75rem;
+    --fg: #cdd6f4;
+    --dim: #a6adc8;
+    --accent: #cba6f7;
+    --warn: #f9e2af;
+    --capped: #f38ba8;
+    --track: rgba(166, 173, 200, 0.18);
+    --font: ui-rounded, "Comic Sans MS", "Segoe UI", ui-sans-serif, system-ui,
+      sans-serif;
+  }
 
-     Every theme above is one layout in a different palette, which is the right
-     answer for a rebrand and the wrong one for a corner someone else is already
-     using. These two are laid out differently, so the choices are genuinely
-     different: where they sit, how much room they take, and how much of the
-     screen they give back.
+  /* Catppuccin Macchiato: cooler and lower-contrast than mocha — which is the
+     honest reason to include it rather than the other two. Its darkest text on
+     its own base is nearer 4.5:1 than mocha's, and its palette is the one that
+     will fail the legibility check first if it is ever nudged lighter. Frappe
+     and latte are not included for the same reason: both are pale, and a pale
+     card over a bright stream is the failure this whole check exists for. */
+  body[data-theme="catppuccin-macchiato"] {
+    --card: rgba(36, 36, 54, 0.92);
+    --card-solid: #242436;
+    --card-border: 1px solid rgba(165, 173, 199, 0.22);
+    --radius: 0.75rem;
+    --fg: #cad3f5;
+    --dim: #a5adc7;
+    --accent: #c6a0f6;
+    --warn: #eed49f;
+    --capped: #f38fa8;
+    --track: rgba(165, 173, 199, 0.2);
+  }
 
-     Their layout lives in rules of their own rather than in the variable block
-     above, because the variable block is the part the tests read — it is the
-     colours, and a theme that could not be read for its colours would be a
-     theme nobody could check. */
+  /* --- Styles: shape, and nothing else ------------------------------------
 
-  /* Strip: one line, edge to edge, along the bottom.
-     For a channel with an alert or a chat box in the corner. The other five all
-     want the same real estate, and a streamer who cannot move it needs one that
-     does not. It is a row rather than a column, so the bar grows into whatever
-     width is left over instead of sitting under a number.
+     Each of these decides where the card sits, how big the number is, how much
+     padding there is, and which parts are drawn. None of them sets a colour.
 
-     Square corners and no border, because a full-width strip with rounded ends
-     reads as a button. */
-  body[data-theme="strip"] {
-    --card: rgba(8, 8, 12, 0.88);
-    --card-solid: #08080c;
-    --card-border: none;
-    --radius: 0;
+     These live in `body[data-style="…"]` rules rather than beside the palettes
+     above, and that placement is load-bearing: the base `.card` rule sets
+     `right` and `bottom` directly, and two selectors of equal specificity are
+     settled by source order. Position declared in the palette block — earlier in
+     the file — would lose to the base rule and the card would stay hard against
+     the edge. A `body[data-style="…"] .card` selector is more specific and
+     wins. */
+
+  /* Corner: the default. A panel in the bottom-right, at the size the palettes
+     were originally authored for. */
+  body[data-style="corner"] {
+    --pad-y: 1.25rem;
+    --pad-x: 1.5rem;
+    --min-width: 16rem;
+    --count-size: 3.5rem;
+    --count-weight: 700;
+    --count-spacing: normal;
+    --corner-x: 2rem;
+    --corner-y: 2rem;
+  }
+
+  /* Slim: the same panel, smaller, and in the top-left. Every palette is
+     available in it, which is the point — this used to be a theme of its own
+     (`minimal`), and could only ever be had in one colour. */
+  body[data-style="slim"] {
+    --pad-y: 0.75rem;
+    --pad-x: 1rem;
+    --min-width: 12rem;
+    --count-size: 2.5rem;
+    --count-weight: 600;
+    --corner-x: 2rem;
+    --corner-y: 2rem;
+  }
+  body[data-style="slim"] .card {
+    /* Top-left, and only because a small block reads better there than tucked
+       into a corner beside whatever else is on screen.
+
+       In a rule of its own rather than in the variable block above, for the
+       reason spelled out on `big` below: the base `.card` rule sets `right` and
+       `bottom` directly, two selectors of equal specificity are settled by
+       source order, and positioning declared earlier in the file loses to it.
+       Declared here, this selector is more specific and wins.
+
+       All four edges are set because two are already set by the base rule, and
+       an `auto` that is never written does not cancel one that was. */
+    left: var(--corner-x);
+    top: var(--corner-y);
+    right: auto;
+    bottom: auto;
+  }
+
+  /* Strip: one line, edge to edge, along the bottom. For a channel with an
+     alert or a chat box already in the corner — every other style wants the same
+     real estate, and a streamer who cannot move it needs one that does not. It
+     is a row rather than a column, so the bar grows into whatever width is left
+     over instead of sitting under a number. */
+  body[data-style="strip"] {
     --pad-y: 0.375rem;
     --pad-x: 1rem;
     --count-size: 1.375rem;
     --count-weight: 700;
-    --fg: #fafafa;
-    --dim: #a1a1aa;
-    --accent: #4ade80;
-    --warn: #fbbf24;
-    --capped: #f87171;
-    --track: rgba(255, 255, 255, 0.14);
-    --bar-radius: 0;
     --corner-x: 0;
     --corner-y: 0;
   }
-  body[data-theme="strip"] .card {
+  body[data-style="strip"] .card {
     /* Row, full width, pinned to the bottom edge. `min-width` goes because this
        is as wide as the source, and `max-width` because the card *is* the strip
-       — left in place it would cap the row at 28rem and defeat the whole theme.
+       — left in place it would cap the row at 28rem and defeat the whole style.
      */
     display: flex;
     flex-direction: row;
@@ -344,25 +411,25 @@ const OVERLAY_HTML: &str = r##"<!doctype html>
     min-width: 0;
     max-width: none;
   }
-  body[data-theme="strip"] .bar {
+  body[data-style="strip"] .bar {
     /* The only thing that grows. Everything else keeps its natural width, so
        the bar absorbs whatever the words and the digits did not need. */
     flex: 1 1 8rem;
     min-width: 4rem;
     margin: 0;
   }
-  body[data-theme="strip"] .status,
-  body[data-theme="strip"] .count,
-  body[data-theme="strip"] .row,
-  body[data-theme="strip"] .event,
-  body[data-theme="strip"] .note {
+  body[data-style="strip"] .status,
+  body[data-style="strip"] .count,
+  body[data-style="strip"] .row,
+  body[data-style="strip"] .event,
+  body[data-style="strip"] .note {
     /* Without this a long event line squeezes the bar rather than the text
        around it, and the one thing that must stay readable is the one that
        shrinks. */
     flex: 0 0 auto;
     margin-top: 0;
   }
-  body[data-theme="strip"] .row {
+  body[data-style="strip"] .row {
     /* The two halves of this row are already separated by the gap; without this
        they spread to the far edges of a full-width strip. */
     gap: 0.75rem;
@@ -376,63 +443,32 @@ const OVERLAY_HTML: &str = r##"<!doctype html>
      bar does, and a bar under a number that large is a second answer to a
      question already answered.
 
-     It keeps a plate behind the digits, for the same reason `minimal` does: no
-     card at all means white text over whatever is happening in the scene, which
-     is unreadable far more often than it is not. */
-  body[data-theme="big"] {
-    --card: rgba(0, 0, 0, 0.62);
-    --card-solid: #000000;
-    --card-border: none;
-    --radius: 0.5rem;
+     It keeps a plate behind the digits, for the same reason every other style
+     does: no card at all means white text over whatever is happening in the
+     scene, which is unreadable far more often than it is not. */
+  body[data-style="big"] {
     --pad-y: 1rem;
     --pad-x: 2rem;
     --count-size: 7rem;
     --count-weight: 800;
     --count-spacing: -0.03em;
-    --fg: #ffffff;
-    --dim: #d4d4d8;
-    --accent: #4ade80;
-    --warn: #fbbf24;
-    --capped: #f87171;
-    --track: rgba(255, 255, 255, 0.2);
-    --corner-x: auto;
-    --corner-y: 2rem;
-    /* Centred on the horizontal axis.
-     *
-     * In its own rule rather than in the variable block above, because the base
-     * `.card` rule sets `right: var(--corner-x)` directly. Two selectors of
-     * equal specificity settle by source order, so positioning declared beside
-     * the colours — earlier in the file — loses to the base rule and the card
-     * stays hard against the edge it was supposed to be centred in. A
-     * `body[data-theme="big"] .card` selector is more specific and wins.
-     *
-     * `left: 50%` alone would put the card's *left edge* at the middle rather
-     * than its centre, so something has to pull it back by half its width.
-     *
-     * The obvious thing — `transform: translateX(-50%)` — was tried and
-     * **removed the card from the screen entirely**: with the base rule's
-     * `min-width` in play the shift lands the whole card off-canvas. A
-     * `transform` here is also the one property that would promote the card to
-     * its own compositing layer, which is the mechanism the `filter` and
-     * `text-shadow` bans exist to avoid.
-     *
-     * So it is centred by layout instead of arithmetic: `left: 0; right: 0`
-     * makes the card as wide as the source and `margin-inline: auto` centres
-     * that box. No offset is computed, so nothing can fall out of step with the
-     * digit count, and no layer is created.
-     *
-     * Two things have to be undone for that to work. `min-width` stops `auto`
-     * margins centring anything — a minimum width wins over the free space they
-     * distribute — so it is cleared here. And `max-width` would cap the card
-     * below the source width, leaving a gap that reads as off-centre again. */
-    --corner-x: 0;
     --corner-y: 2rem;
   }
-  body[data-theme="big"] .card {
+  body[data-style="big"] .card {
     /* Shrink to the digits, then centre *that*. `width: fit-content` has to come
        first: with `left: 0; right: 0` alone the card box spans the whole source
        and the dark plate runs edge to edge, so the number is centred inside a
-       full-width bar rather than a plate around the number. */
+       full-width bar rather than a plate around the number.
+
+       Centred by layout rather than arithmetic. `left: 50%` alone would put the
+       card's *left edge* at the middle, and the usual repair —
+       `transform: translateX(-50%)` — **removed the card from the screen
+       entirely**: with the base rule's `min-width` in play the shift lands the
+       whole thing off-canvas. A `transform` here is also the one property that
+       would promote the card to its own compositing layer, which is the
+       mechanism the `filter` and `text-shadow` bans exist to avoid. Auto margins
+       distribute real slack, so nothing can fall out of step with the digit
+       count. */
     width: fit-content;
     max-width: calc(100% - 4rem);
     left: 0;
@@ -448,23 +484,24 @@ const OVERLAY_HTML: &str = r##"<!doctype html>
        that has dropped to its own line reads as a second number. */
     white-space: nowrap;
   }
-  body[data-theme="big"] .status,
-  body[data-theme="big"] .bar,
-  body[data-theme="big"] .row {
-    /* The parts that would make this the card theme again. */
+  body[data-style="big"] .status,
+  body[data-style="big"] .bar,
+  body[data-style="big"] .row {
+    /* The parts that would make this the corner style again. */
     display: none;
   }
-  body[data-theme="big"] .count,
-  body[data-theme="big"] .event,
-  body[data-theme="big"] .note {
+  body[data-style="big"] .count,
+  body[data-style="big"] .event,
+  body[data-style="big"] .note {
     text-align: center;
   }
-  body[data-theme="big"] .event {
+  body[data-style="big"] .event {
     margin-top: 0.25rem;
   }
-  body[data-theme="big"] .note {
+  body[data-style="big"] .note {
     margin-top: 0.5rem;
   }
+
 </style>
 </head>
 <body>
@@ -591,13 +628,51 @@ fetch('/api/state')
     remainingEl.textContent = 'is the app still running?';
   });
 
-// Was the theme pinned in this page's own URL?
+// Was the look pinned in this page's own URL?
 //
 // If it was, that is a deliberate choice — the streamer copied a URL with a
 // theme in it — and nothing the app says afterwards should override it. If it
 // was not, the overlay follows the app's setting, so changing it does not mean
 // deleting and re-adding a Browser Source mid-stream.
-const themeIsPinned = new URLSearchParams(location.search).has('theme');
+const pinned = new URLSearchParams(location.search);
+
+// What a streamer set in OBS's "Custom CSS" box, if anything.
+//
+// OBS injects that box as a `<style>` element *appended to `<head>`* — verified
+// against the `obs-browser` plugin binary, which does exactly this in
+// `document.querySelector('head').appendChild(obsCSS)`. Two consequences this
+// code depends on:
+//
+//   - Being later in the document, it wins ties against our own stylesheet, so
+//     someone who wants a colour we did not think of needs `:root { --accent: … }`
+//     and nothing more.
+//   - It never removes an attribute, so the override has to be read out of the
+//     cascade and applied by hand. Hence reading the properties rather than
+//     expecting the attribute to change on its own.
+//
+// Precedence: Custom CSS beats the app's setting, which beats nothing. The
+// reason is that the CSS box is per-Browser-Source — someone can put a catppuccin
+// overlay on one scene and the app's default on another, which no single app
+// setting can express.
+function cssOverride(axis) {
+  const declared = getComputedStyle(document.documentElement)
+    .getPropertyValue('--yap-' + axis);
+  return (declared || '').trim();
+}
+
+// Adopt whatever the CSS box asked for. Absent variables leave the attributes
+// alone, which is what makes "set one axis, leave the other" work.
+function applyCssOverrides() {
+  const theme = cssOverride('theme');
+  if (theme) document.body.dataset.theme = theme;
+
+  const style = cssOverride('style');
+  if (style) document.body.dataset.style = style;
+}
+
+// Run once now and again on the poll: OBS injects the CSS box on load, and the
+// exact ordering against this script is not something to rely on.
+applyCssOverrides();
 
 // Poll as well as subscribing. Cheap: a few bytes, and the interval only matters
 // when the socket is unavailable.
@@ -606,11 +681,18 @@ setInterval(() => {
     .then((r) => r.json())
     .then((body) => {
       render(body.snapshot);
+      applyCssOverrides();
 
-      if (!themeIsPinned && body.overlay_theme && document.body.dataset.theme !== body.overlay_theme) {
-        // Only the attribute changes: every theme is already in this page's
+      if (!pinned.has('theme') && body.overlay_theme &&
+          document.body.dataset.theme !== body.overlay_theme) {
+        // Only the attribute changes: every palette is already in this page's
         // stylesheet, so there is nothing to reload and nothing to flash.
         document.body.dataset.theme = body.overlay_theme;
+      }
+
+      if (!pinned.has('style') && body.overlay_style &&
+          document.body.dataset.style !== body.overlay_style) {
+        document.body.dataset.style = body.overlay_style;
       }
     })
     .catch(() => {});
@@ -971,17 +1053,21 @@ pub async fn serve_overlay(
     // empty one for our purposes.
     let query = raw.0.as_deref().unwrap_or("");
 
-    // `?theme=` beats the setting, so a streamer can compare themes by editing
-    // the URL in a browser without touching anything and then copy the one they
-    // want into OBS.
-    let theme = state.overlay_theme(value(query, "theme").as_deref());
+    // `?theme=` and `?style=` beat the setting, so a streamer can compare looks
+    // by editing the URL in a browser without touching anything and then copy
+    // the one they want into OBS. Either can be pinned alone — `?theme=neon`
+    // keeps whichever shape the app is set to.
+    let (theme, style) = state.overlay_look(
+        value(query, "theme").as_deref(),
+        value(query, "style").as_deref(),
+    );
 
     let body = if flag(query, "debug") {
         debug_html()
     } else if flag(query, "opaque") {
         opaque_overlay_html(Some(&theme))
     } else {
-        overlay_html_themed(&theme)
+        overlay_html_with(&theme, Some(&style))
     };
 
     Html(body)
@@ -1032,7 +1118,7 @@ pub async fn serve_dock(State(_state): State<Arc<AppState>>) -> Response {
 /// checks that every theme here has a rule in the stylesheet and every rule in
 /// the stylesheet is in here.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct OverlayTheme {
+pub struct OverlayPalette {
     /// The value stored in settings and passed as `?theme=`.
     pub id: &'static str,
     /// What the settings panel calls it.
@@ -1041,92 +1127,235 @@ pub struct OverlayTheme {
     pub note: &'static str,
 }
 
-/// Every overlay theme, in the order the settings panel lists them.
+impl std::fmt::Display for OverlayPalette {
+    /// The id, so a test failure can say "{palette}/{style}" and be read.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.id)
+    }
+}
+
+/// Every palette, in the order the settings panel lists them.
 ///
-/// `card` is first and is the default: an existing install that has never
-/// heard of themes keeps exactly the card it had.
-pub const OVERLAY_THEMES: &[OverlayTheme] = &[
-    OverlayTheme {
+/// **Colours and nothing else.** A palette never changes the shape — that is
+/// [`OverlayStyle`]'s job — which is what lets any of them pair with any style.
+/// `card` is first and is the default: an install that has never heard of
+/// either axis keeps exactly the look it had.
+pub const OVERLAY_PALETTES: &[OverlayPalette] = &[
+    OverlayPalette {
         id: "card",
         label: "Card",
-        note: "the default: a dark rounded panel in the bottom-right",
+        note: "the default: dark, with a green accent",
     },
-    OverlayTheme {
+    OverlayPalette {
         id: "minimal",
         label: "Minimal",
-        note: "square, borderless, quiet, and in the top-left",
+        note: "near-black and cool blue",
     },
-    OverlayTheme {
+    OverlayPalette {
         id: "cute",
         label: "Cute",
-        note: "pastel and pill-shaped, with a soft rounded font",
+        note: "pastel rose on a pale pink card",
     },
-    OverlayTheme {
+    OverlayPalette {
         id: "neon",
         label: "Neon",
-        note: "hard corners, one electric accent, a glow",
+        note: "one electric cyan accent on black",
     },
-    OverlayTheme {
+    OverlayPalette {
         id: "mono",
         label: "Mono",
-        note: "greyscale and small, for a channel that is already loud",
+        note: "greyscale, for a channel that is already loud",
     },
-    OverlayTheme {
+    OverlayPalette {
+        id: "catppuccin-mocha",
+        label: "Catppuccin Mocha",
+        note: "warm pastel dark, with a glow",
+    },
+    OverlayPalette {
+        id: "catppuccin-macchiato",
+        label: "Catppuccin Macchiato",
+        note: "a cooler, lower-contrast catppuccin",
+    },
+];
+
+/// The palette used when nothing is configured.
+pub const DEFAULT_OVERLAY_PALETTE: &str = "card";
+
+/// Look up a palette by id, falling back to the default.
+///
+/// Falling back rather than failing, because the id comes out of a settings file
+/// a person can edit. An unknown name must not take the overlay down: it is the
+/// only thing on screen during a stream.
+pub fn overlay_palette(id: &str) -> &'static OverlayPalette {
+    OVERLAY_PALETTES
+        .iter()
+        .find(|palette| palette.id == id.trim().to_lowercase())
+        .unwrap_or_else(|| {
+            log::warn!("overlay: unknown palette {id:?}, using {DEFAULT_OVERLAY_PALETTE:?}");
+            palette_by_id(DEFAULT_OVERLAY_PALETTE)
+        })
+}
+
+fn palette_by_id(id: &str) -> &'static OverlayPalette {
+    OVERLAY_PALETTES
+        .iter()
+        .find(|palette| palette.id == id)
+        .expect("the default palette is in the table")
+}
+
+/// One overlay shape.
+///
+/// The second axis. A style decides where the card sits, how much of it there
+/// is, and which parts are drawn — never what colour anything is. Keeping the
+/// two apart is what makes `slim` a single block of CSS instead of one per
+/// palette, and it is why a streamer can have a slim catppuccin overlay without
+/// anyone writing it for them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct OverlayStyle {
+    /// The value stored in settings and passed as `?style=`.
+    pub id: &'static str,
+    /// What the settings panel calls it.
+    pub label: &'static str,
+    /// One line on what it is for.
+    pub note: &'static str,
+}
+
+impl std::fmt::Display for OverlayStyle {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.id)
+    }
+}
+
+/// Every style, in the order the settings panel lists them.
+pub const OVERLAY_STYLES: &[OverlayStyle] = &[
+    OverlayStyle {
+        id: "corner",
+        label: "Corner",
+        note: "the default: a rounded panel in the bottom-right",
+    },
+    OverlayStyle {
+        id: "slim",
+        label: "Slim",
+        note: "the same panel, smaller and in the top-left",
+    },
+    OverlayStyle {
         id: "strip",
         label: "Strip",
         note: "one line across the bottom, for a busy corner",
     },
-    OverlayTheme {
+    OverlayStyle {
         id: "big",
         label: "Big",
         note: "just the number, centred and large",
     },
 ];
 
-/// The theme used when nothing is configured.
-pub const DEFAULT_OVERLAY_THEME: &str = "card";
+/// The style used when nothing is configured.
+pub const DEFAULT_OVERLAY_STYLE: &str = "corner";
 
-/// Look up a theme by id, falling back to the default.
+/// Look up a style by id, falling back to the default.
 ///
-/// Falling back rather than failing, because the id comes out of a settings file
-/// a person can edit. An unknown name must not take the overlay down: it is the
-/// only thing on screen during a stream.
-pub fn overlay_theme(id: &str) -> &'static OverlayTheme {
-    OVERLAY_THEMES
+/// Falling back for the same reason [`overlay_palette`] does.
+pub fn overlay_style(id: &str) -> &'static OverlayStyle {
+    OVERLAY_STYLES
         .iter()
-        .find(|theme| theme.id == id.trim().to_lowercase())
+        .find(|style| style.id == id.trim().to_lowercase())
         .unwrap_or_else(|| {
-            log::warn!("overlay: unknown theme {id:?}, using {DEFAULT_OVERLAY_THEME:?}");
-            overlay_theme_by_id(DEFAULT_OVERLAY_THEME)
+            log::warn!("overlay: unknown style {id:?}, using {DEFAULT_OVERLAY_STYLE:?}");
+            style_by_id(DEFAULT_OVERLAY_STYLE)
         })
 }
 
-fn overlay_theme_by_id(id: &str) -> &'static OverlayTheme {
-    OVERLAY_THEMES
+fn style_by_id(id: &str) -> &'static OverlayStyle {
+    OVERLAY_STYLES
         .iter()
-        .find(|theme| theme.id == id)
-        .expect("the default theme is in the table")
+        .find(|style| style.id == id)
+        .expect("the default style is in the table")
 }
+
+/// Every `(palette, style)` pair that used to be a single theme.
+///
+/// # Why this exists
+///
+/// Before the two axes there was one list of combined names, and a
+/// `settings.toml` written then still says `overlay_theme = "minimal"`. Reading
+/// that as a palette id alone would give someone who had never chosen a palette
+/// a **strip overlay** — because `strip` and `big` are styles, and would be
+/// found as such — which is the worst possible outcome: the overlay silently
+/// changes shape for someone who upgraded mid-stream.
+///
+/// So the old names are mapped to the pair that reproduces what they used to
+/// see. Unknown names are *not* mapped here; they fall back to the defaults,
+/// which is already the behaviour and already logged.
+pub fn legacy_look(id: &str) -> Option<(&'static str, &'static str)> {
+    Some(match id.trim().to_lowercase().as_str() {
+        "card" => ("card", "corner"),
+        "minimal" => ("minimal", "slim"),
+        "cute" => ("cute", "corner"),
+        "neon" => ("neon", "corner"),
+        "mono" => ("mono", "corner"),
+        "strip" => ("card", "strip"),
+        "big" => ("card", "big"),
+        _ => return None,
+    })
+}
+
+/// Every old combined name, so a settings file can be migrated on read.
+pub const LEGACY_LOOKS: &[&str] = &["card", "minimal", "cute", "neon", "mono", "strip", "big"];
+
+/// Look up a palette by id, falling back to the default.
+///
+/// Kept as the old name because `settings.toml` and every existing caller speak
+/// in combined looks, and a caller asking for `"minimal"` means the pair.
+pub fn overlay_theme(id: &str) -> &'static OverlayPalette {
+    overlay_palette(id)
+}
+
+/// The old accessor kept compiling for the settings panel and tests.
+///
+/// # Why the split is worth this
+///
+/// `OVERLAY_THEMES` cannot mean the same thing twice over. The settings panel
+/// and the stylesheet both iterate it, and they now need *different* lists — the
+/// panel offers two dropdowns and the stylesheet keys on two attributes. Rather
+/// than thread two iterators through both, each keeps the one it wants and the
+/// agreement test checks each against its own.
+pub const OVERLAY_THEMES: &[OverlayPalette] = OVERLAY_PALETTES;
 
 /// The overlay markup, exposed for tests.
 pub fn overlay_html() -> &'static str {
     OVERLAY_HTML
 }
 
-/// The overlay markup with a theme applied.
+/// The overlay markup with a look applied.
 ///
-/// The body carries `data-theme`, which is all the stylesheet keys off — so
-/// every theme is present in the served page and switching is one attribute
-/// rather than a second copy of the CSS.
+/// The body carries `data-theme` and `data-style`, which is all the stylesheet
+/// keys off — so every combination is present in the served page and switching is
+/// two attributes rather than a second copy of the CSS.
 pub fn overlay_html_themed(id: &str) -> String {
-    let theme = overlay_theme(id);
-
-    OVERLAY_HTML.replace("<body>", &format!(r#"<body data-theme="{}">"#, theme.id))
+    overlay_html_with(id, None)
 }
 
-/// The overlay markup, for tests.
-pub fn themed_overlay_html(id: &str) -> String {
-    overlay_html_themed(id)
+/// The overlay markup with both axes, for tests.
+///
+/// `style` is separate because that is how it is chosen at runtime: a settings
+/// file may name a style, a URL may pin one, or a streamer may set
+/// `--yap-style` in OBS's Custom CSS box, and each of those arrives on its own.
+pub fn overlay_html_with(theme: &str, style: Option<&str>) -> String {
+    let (palette, style) = match legacy_look(theme) {
+        Some(pair) if style.is_none() => (pair.0, Some(pair.1)),
+        _ => (
+            overlay_palette(theme).id,
+            style.map(|id| overlay_style(id).id),
+        ),
+    };
+
+    let body = format!(
+        r#"<body data-theme="{palette}" data-style="{}">"#,
+        style.unwrap_or(DEFAULT_OVERLAY_STYLE)
+    );
+
+    OVERLAY_HTML.replace("<body>", &body)
 }
 
 /// The dock markup, exposed for tests.
@@ -1140,10 +1369,10 @@ pub fn dock_html() -> &'static str {
 /// The body's transparency is untouched — that is what lets the stream show
 /// through — only the card becomes solid.
 fn opaque_overlay_html(theme: Option<&str>) -> String {
-    let html = overlay_html_themed(theme.unwrap_or(DEFAULT_OVERLAY_THEME));
+    let html = overlay_html_with(theme.unwrap_or(DEFAULT_OVERLAY_PALETTE), None);
 
-    // The variable holding whatever the chosen theme uses, so this works for a
-    // pastel theme as well as the dark default.
+    // The variable holding whatever the chosen palette uses, so this works for a
+    // pastel one as well as the dark default.
     html.replace("var(--card);", "var(--card-solid);")
 }
 
@@ -1393,12 +1622,17 @@ mod tests {
         let html = overlay_html();
 
         assert!(
-            html.contains("themeIsPinned"),
-            "the overlay must know whether its theme was pinned in the URL",
+            html.contains("pinned.has('theme')") && html.contains("pinned.has('style')"),
+            "the overlay must know whether either axis was pinned in the URL",
         );
         assert!(
             html.contains("document.body.dataset.theme = body.overlay_theme"),
-            "the overlay must adopt the served theme",
+            "the overlay must adopt the served palette",
+        );
+        assert!(
+            html.contains("document.body.dataset.style = body.overlay_style"),
+            "the overlay must adopt the served shape — the two axes are separate \
+             settings and either can change on its own",
         );
         assert!(
             !html.contains("location.reload"),
@@ -1466,33 +1700,274 @@ mod tests {
     }
 
     #[test]
-    fn every_theme_can_be_asked_for_and_the_default_is_one_of_them() {
-        for theme in OVERLAY_THEMES {
-            let html = themed_overlay_html(theme.id);
+    fn every_palette_and_style_can_be_asked_for_and_both_defaults_are_real() {
+        // Both axes have to be independently applicable, or the split is a
+        // rename rather than a feature: `?theme=neon` must work whatever shape is
+        // in force, and `?style=strip` whatever palette.
+        for palette in OVERLAY_PALETTES {
+            let html = overlay_html_with(palette.id, Some("corner"));
             assert!(
-                html.contains(&format!(r#"<body data-theme="{}">"#, theme.id)),
+                html.contains(&format!(
+                    r#"<body data-theme="{}" data-style="corner">"#,
+                    palette.id
+                )),
                 "{} was not applied to the body",
-                theme.id,
+                palette.id,
+            );
+        }
+
+        for style in OVERLAY_STYLES {
+            let html = overlay_html_with("card", Some(style.id));
+            assert!(
+                html.contains(&format!(r#"data-style="{}""#, style.id)),
+                "{} was not applied to the body",
+                style.id,
             );
         }
 
         assert!(
-            OVERLAY_THEMES
+            OVERLAY_PALETTES
                 .iter()
-                .any(|theme| theme.id == DEFAULT_OVERLAY_THEME)
+                .any(|palette| palette.id == DEFAULT_OVERLAY_PALETTE)
+        );
+        assert!(
+            OVERLAY_STYLES
+                .iter()
+                .any(|style| style.id == DEFAULT_OVERLAY_STYLE)
         );
     }
 
     #[test]
-    fn an_unknown_theme_falls_back_rather_than_failing() {
-        // The id can come out of a hand-edited settings file. An overlay that
-        // refuses to render is the one failure that cannot happen during a
-        // stream.
-        assert_eq!(overlay_theme("neon").id, "neon");
-        assert_eq!(overlay_theme("NEON").id, "neon");
-        assert_eq!(overlay_theme("  neon  ").id, "neon");
-        assert_eq!(overlay_theme("not-a-theme").id, DEFAULT_OVERLAY_THEME);
-        assert_eq!(overlay_theme("").id, DEFAULT_OVERLAY_THEME);
+    fn an_unknown_palette_or_style_falls_back_rather_than_failing() {
+        // The ids can come out of a hand-edited settings file or a mistyped
+        // query. An overlay that refuses to render is the one failure that
+        // cannot happen during a stream.
+        assert_eq!(overlay_palette("neon").id, "neon");
+        assert_eq!(overlay_palette("NEON").id, "neon");
+        assert_eq!(overlay_palette("  neon  ").id, "neon");
+        assert_eq!(overlay_palette("not-a-theme").id, DEFAULT_OVERLAY_PALETTE);
+        assert_eq!(overlay_palette("").id, DEFAULT_OVERLAY_PALETTE);
+
+        assert_eq!(overlay_style("strip").id, "strip");
+        assert_eq!(overlay_style("STRIP").id, "strip");
+        assert_eq!(overlay_style("not-a-style").id, DEFAULT_OVERLAY_STYLE);
+    }
+
+    #[test]
+    fn a_palette_never_sets_a_shape_and_a_style_never_sets_a_colour() {
+        // The whole design rests on the two axes being independent, and nothing
+        // about CSS stops a palette from quietly setting `--count-size` and
+        // making `slim` meaningless for that one palette.
+        //
+        // The failure is invisible: every palette still has a rule, every style
+        // still applies, and the overlay looks *almost* right — one theme simply
+        // ignores the style someone picked.
+        for palette in OVERLAY_PALETTES {
+            let rule = theme_rule(palette.id).unwrap_or_default();
+
+            for shape in [
+                "--pad-y",
+                "--pad-x",
+                "--min-width",
+                "--count-size",
+                "--count-weight",
+                "--corner-x",
+                "--corner-y",
+                "left:",
+                "top:",
+                "display:",
+            ] {
+                assert!(
+                    !rule.contains(shape),
+                    "palette {} sets {shape:?}, which belongs to the style — it would \
+                     silently override the shape the streamer picked",
+                    palette.id,
+                );
+            }
+        }
+
+        for style in OVERLAY_STYLES {
+            let rule = theme_rule(style.id).unwrap_or_default();
+
+            for colour in ["--card", "--fg", "--dim", "--accent", "--track", "--font"] {
+                assert!(
+                    !rule.contains(colour),
+                    "style {} sets {colour:?}, which belongs to the palette — a slim \
+                     catppuccin would not be catppuccin",
+                    style.id,
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn every_palette_pairs_with_every_style_and_the_combination_is_reachable() {
+        // The point of the split: seven palettes times four styles is twenty-four
+        // looks, and none of them needed twenty-four blocks of CSS. Checked
+        // through the real renderer, because a combination that renders the
+        // default on one axis would pass every per-axis test above.
+        for palette in OVERLAY_PALETTES {
+            for style in OVERLAY_STYLES {
+                let html = overlay_html_with(palette.id, Some(style.id));
+
+                assert!(
+                    html.contains(&format!(r#"data-theme="{}""#, palette.id)),
+                    "{palette}/{style} lost its palette",
+                );
+                assert!(
+                    html.contains(&format!(r#"data-style="{}""#, style.id)),
+                    "{palette}/{style} lost its style",
+                );
+                assert!(
+                    html.contains(&format!(r#"body[data-theme="{palette}"]"#)),
+                    "{palette}/{style} has no palette rule to apply",
+                );
+                assert!(
+                    html.contains(&format!(r#"body[data-style="{style}"]"#)),
+                    "{palette}/{style} has no style rule to apply",
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn obs_custom_css_can_choose_both_axes() {
+        // The escape hatch. OBS injects its "Custom CSS" box as a `<style>`
+        // appended to `<head>` — later in the document than ours, so it wins on
+        // source order — and the overlay reads two variables out of it.
+        //
+        // What this protects is the *reading*, which is the part that can break
+        // quietly: injected CSS sets properties, never attributes, so if the
+        // overlay stopped copying them onto the body the page would still load,
+        // still be legible, and simply ignore everything the streamer asked for.
+        let html = overlay_html();
+
+        for expected in [
+            // Both axes, under the names the docs promise.
+            "'--yap-' + axis",
+            "document.body.dataset.theme = theme",
+            "document.body.dataset.style = style",
+            // And re-applied, because OBS's injection can land after our script
+            // has already run — the poll is the retry.
+            "applyCssOverrides();",
+        ] {
+            assert!(
+                html.contains(expected),
+                "the overlay must contain {expected:?} — without it OBS's Custom \
+                 CSS box silently does nothing",
+            );
+        }
+
+        // An unset variable must leave the attribute alone, or "set one axis and
+        // leave the other" would reset the other one on every poll.
+        assert!(
+            html.contains("if (theme)") && html.contains("if (style)"),
+            "each axis must be adopted only when its variable is set",
+        );
+
+        // The names the variables use must be the names the tables use, or
+        // `--yap-theme: neon` sets an attribute no rule matches and the page
+        // keeps whatever the app asked for.
+        for palette in OVERLAY_PALETTES {
+            assert!(
+                html.contains(&format!(r#"body[data-theme="{}"]"#, palette.id)),
+                "--yap-theme can only select {}, which has no rule",
+                palette.id,
+            );
+        }
+        for style in OVERLAY_STYLES {
+            assert!(
+                html.contains(&format!(r#"body[data-style="{}"]"#, style.id)),
+                "--yap-style can only select {}, which has no rule",
+                style.id,
+            );
+        }
+    }
+
+    #[test]
+    fn the_css_variables_we_promise_are_the_ones_the_page_uses() {
+        // The variables are public API now: a streamer pastes them into OBS and
+        // expects them to keep working. Renaming one silently breaks somebody's
+        // scene, and nothing else would notice.
+        //
+        // The list is written out here rather than scraped from the stylesheet on
+        // purpose — scraping would check the page against itself and always pass.
+        const PROMISED: &[&str] = &[
+            "--card",
+            "--card-solid",
+            "--card-border",
+            "--fg",
+            "--dim",
+            "--accent",
+            "--warn",
+            "--capped",
+            "--radius",
+            "--pad-y",
+            "--pad-x",
+            "--min-width",
+            "--count-size",
+            "--count-weight",
+            "--corner-x",
+            "--corner-y",
+            "--font",
+        ];
+
+        let html = strip_css_comments(overlay_html());
+
+        for variable in PROMISED {
+            assert!(
+                html.contains(&format!("{variable}:")),
+                "{variable} is documented as customisable but the stylesheet never \
+                 sets it — setting it in OBS would do nothing",
+            );
+        }
+
+        // And the documentation has to agree, or we are promising something we
+        // never wrote down.
+        let docs = std::fs::read_to_string(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../docs/overlay.md"
+        ))
+        .expect("the overlay documentation");
+
+        for variable in PROMISED {
+            assert!(
+                docs.contains(variable),
+                "{variable} is customisable and undocumented",
+            );
+        }
+    }
+
+    #[test]
+    fn an_old_combined_name_still_shows_what_it_used_to() {
+        // A settings.toml written before the split says `overlay_theme = "strip"`.
+        // Read as a palette alone, `strip` is not one — and the styles *are*
+        // named `strip`, so it would resolve as a shape and hand someone who had
+        // never chosen a shape a full-width bar mid-stream.
+        //
+        // Every old name maps to the pair that reproduces it.
+        for old in LEGACY_LOOKS {
+            let (palette, style) =
+                legacy_look(old).unwrap_or_else(|| panic!("{old} is an old name with no mapping"));
+
+            assert!(
+                OVERLAY_PALETTES.iter().any(|p| p.id == palette),
+                "{old} maps to palette {palette}, which does not exist",
+            );
+            assert!(
+                OVERLAY_STYLES.iter().any(|s| s.id == style),
+                "{old} maps to style {style}, which does not exist",
+            );
+        }
+
+        // The specific ones that would be actively wrong: `strip` and `big` were
+        // shapes, and reading them as palettes gives the wrong shape.
+        assert_eq!(legacy_look("strip"), Some(("card", "strip")));
+        assert_eq!(legacy_look("big"), Some(("card", "big")));
+        assert_eq!(legacy_look("minimal"), Some(("minimal", "slim")));
+
+        // And a name from neither era falls back rather than being guessed at.
+        assert_eq!(legacy_look("catppuccin-frappe"), None);
     }
 
     #[test]
@@ -1505,7 +1980,53 @@ mod tests {
         //
         // So check the properties that only the *shape* has: a strip is a row
         // spanning the full width, and a big number has no bar under it.
-        let strip = layout_rule("strip", &[".card"]).expect("strip has a layout rule for the card");
+        // Every style that moves the card has to move it in a *rule*, not in the
+        // variable block.
+        //
+        // This is the third time this has bitten, and the failure is invisible
+        // to every other check: the style has a rule, the palette has a rule, the
+        // combination renders, the colours pass contrast — it is simply in the
+        // wrong corner. Declaring `left` beside the colours loses to the base
+        // `.card` rule's `right` on source order, silently.
+        //
+        // So each style that positions the card is checked for a positioning
+        // rule of its own, with the edges it needs cleared.
+        for (style, needs) in [
+            (
+                "slim",
+                vec!["left:", "top:", "right: auto;", "bottom: auto;"],
+            ),
+            (
+                "strip",
+                vec!["left: 0;", "right: 0;", "bottom: 0;", "top: auto;"],
+            ),
+            (
+                "big",
+                vec![
+                    "left: 0;",
+                    "right: 0;",
+                    "top: auto;",
+                    "margin-inline: auto;",
+                ],
+            ),
+        ] {
+            let rule =
+                strip_css_comments(&layout_rule("style", style, &[".card"]).unwrap_or_else(|| {
+                    panic!("{style} must position its card in a rule of its own")
+                }));
+
+            for property in needs {
+                assert!(
+                    rule.contains(property),
+                    "the {style} style needs {property:?} in its own `.card` rule — \
+                     in the variable block it loses to the base rule on source \
+                     order and the card stays in the wrong corner. Got: {rule}",
+                );
+            }
+        }
+
+        let strip = layout_rule("style", "strip", &[".card"])
+            .expect("strip has a layout rule for the card");
         assert!(
             strip.contains("flex-direction: row;"),
             "strip must lay the card out as a row, not the default column. Got: {strip}",
@@ -1515,7 +2036,7 @@ mod tests {
             "strip must span the source rather than sit in a corner. Got: {strip}",
         );
 
-        let strip_bar = layout_rule("strip", &[".bar"]).expect("strip lays out its bar");
+        let strip_bar = layout_rule("style", "strip", &[".bar"]).expect("strip lays out its bar");
         assert!(
             strip_bar.contains("flex: 1"),
             "the bar is what fills a strip; everything else keeps its width. Got: {strip_bar}",
@@ -1535,7 +2056,12 @@ mod tests {
         // pinned, with `margin-inline: auto` distributing the slack between
         // them. Asserted as those together, because any one of them alone
         // leaves it visibly off-centre.
-        let big_card = layout_rule("big", &[".card"]).expect("big positions its card");
+        // Comments stripped: the rule's own comment records the `transform` that
+        // was tried and removed the card, so a naive search finds the
+        // explanation and fails on it.
+        let big_card = strip_css_comments(
+            &layout_rule("style", "big", &[".card"]).expect("big positions its card"),
+        );
         for (property, why) in [
             (
                 "margin-inline: auto;",
@@ -1570,7 +2096,8 @@ mod tests {
         // The strip has the mirror-image requirement — full width, pinned to the
         // bottom edge — so the two themes must not be able to drift into each
         // other by accident.
-        let strip_card = layout_rule("strip", &[".card"]).expect("strip positions its card");
+        let strip_card =
+            layout_rule("style", "strip", &[".card"]).expect("strip positions its card");
         for property in [
             "left: 0;",
             "right: 0;",
@@ -1590,8 +2117,8 @@ mod tests {
 
         // One grouped rule rather than three, so it is looked up by the
         // selector that leads it.
-        let big_hidden =
-            layout_rule("big", &[".status"]).expect("big hides its status, bar and row together");
+        let big_hidden = layout_rule("style", "big", &[".status"])
+            .expect("big hides its status, bar and row together");
         // The rule was found *by* its selector, so `.status` is what located it.
         // What the body has to say is that the element is hidden.
         assert!(
@@ -1684,9 +2211,12 @@ mod tests {
     /// and `display: none` appear in more than one: searching the whole page
     /// passes a `strip` that has been quietly reverted to a column by the rule
     /// next door.
-    fn layout_rule(id: &str, selectors: &[&str]) -> Option<String> {
+    fn layout_rule(axis: &str, id: &str, selectors: &[&str]) -> Option<String> {
         let html = overlay_html();
-        let prefix = format!("body[data-theme=\"{id}\"]");
+        // The attribute is a parameter because shape and colour live on different
+        // ones now — a `strip` is `body[data-style="strip"]`, and looking for
+        // `[data-theme="strip"]` finds nothing and quietly passes.
+        let prefix = format!("body[data-{axis}=\"{id}\"]");
 
         // Every rule on this theme, paired with its selector list.
         //

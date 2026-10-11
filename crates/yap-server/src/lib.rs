@@ -132,15 +132,24 @@ struct StateResponse {
     /// theme in settings would otherwise need the source to be deleted and
     /// re-added mid-stream.
     overlay_theme: String,
+    /// The overlay style currently in force.
+    ///
+    /// Carried separately from the palette because the two are chosen
+    /// independently, and OBS creates a Browser Source once and then leaves it
+    /// alone — so a change to either has to reach the page without a reload.
+    overlay_style: String,
 }
 
 async fn get_state(State(state): State<Arc<AppState>>) -> Json<StateResponse> {
+    let (overlay_theme, overlay_style) = state.overlay_look(None, None);
+
     Json(StateResponse {
         snapshot: state.snapshot().await,
         listening: state.is_listening().await,
         warnings: state.warnings().await,
         events: state.events().await,
-        overlay_theme: state.overlay_theme(None),
+        overlay_theme,
+        overlay_style,
     })
 }
 

@@ -578,6 +578,7 @@ pub async fn start_server(
     // The overlay theme goes in here for the same reason: it is a setting the
     // served page needs, and the page cannot read the file per request.
     state.set_overlay_theme(&settings.overlay_theme);
+    state.set_overlay_style(&settings.overlay_style);
 
     // The clock, so elapsed time and words-per-minute move even while the
     // streamer is not talking. Started with the server rather than the window so

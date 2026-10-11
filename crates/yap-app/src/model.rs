@@ -71,6 +71,7 @@ pub struct SessionModel {
     /// already observes this entity, so a change repaints the window without
     /// anything else having to notice.
     pub overlay_theme: String,
+    pub overlay_style: String,
 }
 
 impl SessionModel {
@@ -329,6 +330,7 @@ impl SessionEntity {
     ) -> Entity<Self> {
         let model = SessionModel {
             overlay_theme: state.overlay_theme(None),
+            overlay_style: state.overlay_style(None),
             overlay_url,
             ..SessionModel::default()
         };
@@ -398,6 +400,12 @@ impl SessionEntity {
     /// gets the default card.
     pub fn set_overlay_theme(&mut self, theme: &str, cx: &mut gpui::Context<Self>) {
         self.model.overlay_theme = self.state.overlay_theme(Some(theme));
+        cx.notify();
+    }
+
+    /// Set the shape, on the same terms as [`Self::set_overlay_theme`].
+    pub fn set_overlay_style(&mut self, style: &str, cx: &mut gpui::Context<Self>) {
+        self.model.overlay_style = self.state.overlay_style(Some(style));
         cx.notify();
     }
 

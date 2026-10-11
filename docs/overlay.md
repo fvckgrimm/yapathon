@@ -22,33 +22,92 @@ one.
 
 ## Looks
 
-Seven, in **Settings → Overlay look**. To try one without changing anything,
-add `?theme=name` to the overlay URL in a browser tab — `?theme=strip`,
-`?theme=big`, and so on.
+Two independent choices in **Settings → Server**. Pick a colour and a shape;
+anything goes with anything, so there are 28 combinations and only seven
+palettes and four styles had to be written.
+
+To try one without changing anything, add `?theme=name` and/or `?style=name` to
+the overlay URL in a browser tab — `?theme=neon&style=strip`. Either can be
+pinned alone: `?theme=neon` keeps whatever shape the app is set to.
+
+### Colours
 
 | | |
 | --- | --- |
-| **Card** | the default: a dark rounded panel in the bottom-right |
-| **Minimal** | square, borderless, quiet, and in the top-left |
-| **Cute** | pastel and pill-shaped, with a soft rounded font |
-| **Neon** | hard corners, one electric accent, a glow |
-| **Mono** | greyscale and small, for a channel that is already loud |
+| **Card** | the default: dark, with a green accent |
+| **Minimal** | near-black and cool blue, square corners |
+| **Cute** | pastel rose on a pale pink card |
+| **Neon** | one electric cyan accent on black, with a glow |
+| **Mono** | greyscale, for a channel that is already loud |
+| **Catppuccin Mocha** | warm pastel dark, with a glow |
+| **Catppuccin Macchiato** | a cooler, lower-contrast catppuccin |
+
+### Shapes
+
+| | |
+| --- | --- |
+| **Corner** | the default: a rounded panel in the bottom-right |
+| **Slim** | the same panel, smaller and in the top-left |
 | **Strip** | one line across the bottom, for a busy corner |
 | **Big** | just the number, centred and large |
 
-The first five are one layout in five palettes — good for a rebrand. The last two
-change the *shape*, which is what you want when the corner is not yours to use:
+`Slim` and `Strip` exist because the corner is not always yours — an alert or a
+chat box may be in it already. `Big` is for a number that has to read from across
+a room; it drops the bar because "5,000 / 10,000" already says what the bar says.
 
-- **Strip** is for a channel with an alert or a chat box already in the corner.
-  Every other look wants the same real estate; this one runs along the bottom
-  edge instead, with the progress bar filling whatever width the words left over.
-- **Big** is for a number that has to read from across a room. It drops the bar
-  and the status line and shows the count alone at 7rem, because "5,000 / 10,000"
-  already says what the bar says.
-
-Switching looks is live — no need to re-add the Browser Source. A URL with
-`?theme=` pinned is left alone, deliberately: copying that URL into OBS is how you
+Switching is live — no need to re-add the Browser Source. A URL with `?theme=` or
+`?style=` pinned is left alone, deliberately: copying that URL into OBS is how you
 chose it.
+
+## Making it yours, with OBS's own Custom CSS box
+
+The Browser Source has a **Custom CSS** field. Whatever goes in it overrides this
+page's stylesheet, so you can go past the seven palettes without waiting for a
+new version of the app.
+
+Two variables choose the look — the same names the URL uses:
+
+```css
+:root {
+  --yap-theme: catppuccin-mocha;
+  --yap-style: slim;
+}
+```
+
+Set one and leave the other out to keep whatever the app is set to. Because the
+field is per Browser Source, this is also how you can have one overlay on one
+scene and a different one on another.
+
+And the colours and metrics are variables too, so a brand colour is one line:
+
+```css
+:root {
+  --accent: #fab387;      /* the bar, and the number when the goal is hit */
+  --card: rgba(0,0,0,0.8);
+  --radius: 0;            /* square corners */
+  --count-size: 5rem;     /* a bigger number */
+  --font: "Inter", sans-serif;
+}
+```
+
+The full set: `--card`, `--card-solid`, `--card-border`, `--fg`, `--dim`,
+`--accent`, `--warn`, `--capped`, `--radius`, `--pad-y`, `--pad-x`,
+`--min-width`, `--count-size`, `--count-weight`, `--corner-x`, `--corner-y`,
+`--font`.
+
+These names are treated as stable — a test fails if one is renamed or if this
+list stops matching the stylesheet, so a scene you built keeps working.
+
+Two things worth knowing:
+
+- **Colours have to stay readable.** Every palette is checked for 4.5:1 contrast
+  against its own card, because the overlay sits over whatever your stream is
+  doing. A custom `--fg` is not checked; a mid-grey number over a bright scene
+  will genuinely be hard to read.
+- **Do not use `filter`, `text-shadow`, `backdrop-filter`, `mix-blend-mode` or
+  `clip-path`.** OBS's CEF renders them unreliably — they can promote an element
+  to a compositing layer that comes back empty, which is how this overlay once
+  rendered nothing at all in OBS while looking perfect in a browser.
 
 ### If the Browser Source shows nothing
 

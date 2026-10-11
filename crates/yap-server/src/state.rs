@@ -53,12 +53,19 @@ pub struct AppState {
     /// would bury the whisper loading output it is trying to be noticed
     /// against.
     idle_event_note: std::sync::atomic::AtomicBool,
-    /// Which overlay look to serve.
+    /// Which overlay palette to serve.
     ///
     /// Held here rather than read from settings at request time because the
     /// overlay must render with no filesystem access on the hot path, and because
     /// `?theme=` needs a fallback to compare against.
+    ///
+    /// Stored as written rather than resolved, so a combined name from an older
+    /// settings file is still recognisable when the request comes in and can be
+    /// mapped to a pair — resolving here would throw away which axis it named.
     overlay_theme: RwLock<String>,
+
+    /// Which overlay shape to serve.
+    overlay_style: RwLock<String>,
 }
 
 impl Default for AppState {
@@ -79,29 +86,98 @@ impl AppState {
             listening: RwLock::new(false),
             warnings: RwLock::new(Vec::new()),
             overlay_theme: RwLock::new(yap_core::settings::default_overlay_theme()),
+            overlay_style: RwLock::new(yap_core::settings::default_overlay_style()),
         }
     }
 
-    /// The overlay theme to serve, given `override` if the request asked for one.
+    /// The overlay look to serve, given `override` if the request asked for one.
     ///
     /// An unknown name falls back rather than failing: the id can come out of a
     /// hand-edited settings file or a mistyped query, and the overlay is the one
     /// thing that has to work during a stream.
-    pub fn overlay_theme(&self, requested: Option<&str>) -> String {
-        let chosen = requested.map(str::to_string).unwrap_or_else(|| {
-            self.overlay_theme
-                .try_read()
-                .map(|t| t.clone())
-                .unwrap_or_default()
+    ///
+    /// Returns `(palette, style)`, because a request may pin one axis and leave
+    /// the other to the setting — `?theme=neon` should keep whatever shape the
+    /// streamer chose in the app rather than resetting it to the default.
+    pub fn overlay_look(&self, theme: Option<&str>, style: Option<&str>) -> (String, String) {
+        let setting = self
+            .overlay_theme
+            .try_read()
+            .map(|t| t.clone())
+            .unwrap_or_default();
+
+        // A combined name from an older settings file resolves to the pair that
+        // reproduces what it used to show, so an upgrade cannot silently change
+        // someone's overlay mid-stream.
+        let requested = theme.map(str::to_string).unwrap_or_else(|| setting.clone());
+
+        // Only the *stored* name can be a legacy one. A `?theme=` in a URL is
+        // typed by someone standing in front of the app right now, and `card` in
+        // a URL means "the card palette" — not "the old combined card theme",
+        // which would then claim the shape and ignore whatever the streamer has
+        // set in the app.
+        let stored_is_legacy = theme.is_none() && crate::overlay::legacy_look(&setting).is_some();
+
+        let (palette, legacy_style) = match crate::overlay::legacy_look(&requested) {
+            Some(pair) => (pair.0.to_string(), Some(pair.1.to_string())),
+            None => (
+                crate::overlay::overlay_palette(&requested).id.to_string(),
+                None,
+            ),
+        };
+
+        let stored_style = self
+            .overlay_style
+            .try_read()
+            .map(|s| s.clone())
+            .unwrap_or_default();
+
+        // An absent `?style=` keeps whatever the app is set to — but *only* when the
+        // app has actually been set to one, or when the file predates the split.
+        //
+        // A settings file written before the two axes existed has no
+        // `overlay_style` key at all, so it deserialises to the default
+        // `"corner"` — a real value, not an absence, which would silently
+        // overwrite the shape the legacy mapping just recovered. Someone whose
+        // file says `overlay_theme = "strip"` would wake up to a bottom-right
+        // card.
+        let default_style = match legacy_style {
+            Some(style) if stored_is_legacy => style,
+            _ if stored_style.is_empty() => crate::overlay::DEFAULT_OVERLAY_STYLE.to_string(),
+            _ => crate::overlay::overlay_style(&stored_style).id.to_string(),
+        };
+
+        let style = style.map_or(default_style, |requested| {
+            crate::overlay::overlay_style(requested).id.to_string()
         });
 
-        crate::overlay::overlay_theme(&chosen).id.to_string()
+        (palette, style)
     }
 
-    /// Set the theme served when the request does not ask for one.
+    /// The palette to serve, given `override` if the request asked for one.
+    pub fn overlay_theme(&self, requested: Option<&str>) -> String {
+        self.overlay_look(requested, None).0
+    }
+
+    /// The style to serve, given `override` if the request asked for one.
+    pub fn overlay_style(&self, requested: Option<&str>) -> String {
+        self.overlay_look(None, requested).1
+    }
+
+    /// Set the palette served when the request does not ask for one.
+    ///
+    /// Stored verbatim rather than resolved, so an old combined name survives
+    /// to be mapped per request.
     pub fn set_overlay_theme(&self, theme: &str) {
         if let Ok(mut guard) = self.overlay_theme.try_write() {
-            *guard = crate::overlay::overlay_theme(theme).id.to_string();
+            *guard = theme.trim().to_lowercase();
+        }
+    }
+
+    /// Set the shape served when the request does not ask for one.
+    pub fn set_overlay_style(&self, style: &str) {
+        if let Ok(mut guard) = self.overlay_style.try_write() {
+            *guard = style.trim().to_lowercase();
         }
     }
 

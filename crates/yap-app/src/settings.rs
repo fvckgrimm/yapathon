@@ -258,12 +258,30 @@ const SERVER: &[Field] = &[
     },
     Field {
         key: "overlay_theme",
-        label: "Overlay look",
+        label: "Overlay colours",
         kind: FieldKind::Choice,
-        options: &["card", "minimal", "cute", "neon", "mono", "strip", "big"],
+        options: &[
+            "card",
+            "minimal",
+            "cute",
+            "neon",
+            "mono",
+            "catppuccin-mocha",
+            "catppuccin-macchiato",
+        ],
         help: Some(
-            "what OBS shows; preview one at a time by adding ?theme=name to the \
+            "the colour scheme; preview one at a time by adding ?theme=name to the \
              overlay URL in a browser",
+        ),
+    },
+    Field {
+        key: "overlay_style",
+        label: "Overlay shape",
+        kind: FieldKind::Choice,
+        options: &["corner", "slim", "strip", "big"],
+        help: Some(
+            "where it sits and how big; any colour works in any shape, and OBS's \
+             own Custom CSS box can override both per Browser Source",
         ),
     },
     Field {

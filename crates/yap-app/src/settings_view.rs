@@ -176,6 +176,7 @@ fn field_value(settings: &yap_core::settings::Settings, field: &Field) -> String
         "accent" => settings.accent.clone(),
         "appearance" => settings.appearance.clone(),
         "overlay_theme" => settings.overlay_theme.clone(),
+        "overlay_style" => settings.overlay_style.clone(),
         _ if field.key.starts_with("event_") => words_for(settings, &event_key(field.key)),
         "event_twitch_resub" => words_for(settings, "twitch:resub"),
         "event_twitch_gift_sub" => words_for(settings, "twitch:gift_sub"),
@@ -1030,10 +1031,12 @@ impl SettingsView {
             KitTheme::change(mode, None, cx);
         }
 
-        // The overlay reads its theme from the shared state, so this is what the
-        // served page will use on its next poll.
+        // The overlay reads its look from the shared state, so this is what the
+        // served page will use on its next poll. Both axes: the palette and the
+        // shape are separate settings and the page keys on both.
         self.model.update(cx, |model, cx| {
-            model.set_overlay_theme(&saved.overlay_theme, cx)
+            model.set_overlay_theme(&saved.overlay_theme, cx);
+            model.set_overlay_style(&saved.overlay_style, cx);
         });
     }
 
@@ -1116,6 +1119,7 @@ fn apply_field(settings: &mut yap_core::settings::Settings, field: &Field, raw: 
         "accent" => settings.accent = trimmed.to_lowercase(),
         "appearance" => settings.appearance = trimmed.to_lowercase(),
         "overlay_theme" => settings.overlay_theme = trimmed.to_lowercase(),
+        "overlay_style" => settings.overlay_style = trimmed.to_lowercase(),
         _ if field.key.starts_with("event_") => {
             let event = event_key(field.key);
             if trimmed.is_empty() {
@@ -1629,28 +1633,119 @@ mod tests {
         assert!(offered.ends_with("?theme=mono"));
     }
 
-    #[test]
-    fn the_overlay_theme_the_panel_offers_is_the_one_that_renders() {
-        // The picker offers `card, minimal, cute, neon, mono`. If `yap-server`
-        // gains or loses a theme, this fails rather than the panel offering a
-        // button that silently does nothing — which is the failure mode this
-        // project keeps meeting.
-        let offered: Vec<&str> = SETTINGS_SECTIONS
+    /// The options the settings panel offers for one field.
+    fn offered(key: &str) -> Vec<&'static str> {
+        SETTINGS_SECTIONS
             .iter()
             .flat_map(|section| section.fields.iter())
-            .find(|field| field.key == "overlay_theme")
+            .find(|field| field.key == key)
             .map(|field| field.options.to_vec())
-            .expect("an overlay theme field");
+            .unwrap_or_else(|| panic!("a {key} field"))
+    }
 
-        let real: Vec<&str> = yap_server::overlay::OVERLAY_THEMES
+    #[test]
+    fn both_overlay_axes_the_panel_offers_are_the_ones_that_render() {
+        // The two pickers list `card, minimal, cute, neon, mono, …` and
+        // `corner, slim, strip, big`. If `yap-server` gains or loses either, this
+        // fails rather than the panel offering a button that silently does
+        // nothing — which is the failure mode this project keeps meeting.
+        //
+        // Both axes, because they are separate lists now and either can drift.
+        let palettes: Vec<&str> = yap_server::overlay::OVERLAY_PALETTES
             .iter()
-            .map(|theme| theme.id)
+            .map(|palette| palette.id)
+            .collect();
+
+        let styles: Vec<&str> = yap_server::overlay::OVERLAY_STYLES
+            .iter()
+            .map(|style| style.id)
             .collect();
 
         assert_eq!(
-            offered, real,
-            "the settings picker and the served overlay must offer the same themes",
+            offered("overlay_theme"),
+            palettes,
+            "the colour picker and the served overlay must offer the same palettes",
         );
+        assert_eq!(
+            offered("overlay_style"),
+            styles,
+            "the shape picker and the served overlay must offer the same styles",
+        );
+    }
+
+    #[test]
+    fn a_style_picked_in_the_panel_survives_all_the_way_to_the_page() {
+        // The seam, because "the dropdown appears and takes clicks" is not the
+        // same as "the shape changes". A field missing from `apply_field` reads
+        // and writes nothing, draws perfectly, and saves nothing.
+        let field = SETTINGS_SECTIONS
+            .iter()
+            .flat_map(|section| section.fields.iter())
+            .find(|field| field.key == "overlay_style")
+            .copied()
+            .expect("an overlay style field");
+
+        let mut settings = Settings::default();
+        assert!(apply_field(&mut settings, &field, "  Strip  "));
+        assert_eq!(
+            settings.overlay_style, "strip",
+            "the chosen shape must be stored, lower-cased and trimmed",
+        );
+
+        // And it reads back, which is what marks the current option in the
+        // dropdown. A write-only field would save correctly and show nothing
+        // selected.
+        assert_eq!(field_value(&settings, &field), "strip");
+
+        let state = yap_server::AppState::shared();
+        state.set_overlay_theme("catppuccin-mocha");
+        state.set_overlay_style(&settings.overlay_style);
+
+        let page = yap_server::overlay::overlay_html_with(
+            &state.overlay_theme(None),
+            Some(&state.overlay_style(None)),
+        );
+
+        assert!(page.contains(r#"data-theme="catppuccin-mocha""#), "{page}");
+        assert!(page.contains(r#"data-style="strip""#), "{page}");
+    }
+
+    #[test]
+    fn an_old_combined_setting_still_renders_the_overlay_it_used_to() {
+        // Someone upgrading mid-stream. Their file says `overlay_theme = "strip"`
+        // — which is a *shape*, not a colour, and now also a real style id. Read
+        // as a palette alone it would fall back to `card`, and the strip they
+        // chose months ago would quietly become a bottom-right card.
+        let state = yap_server::AppState::shared();
+        state.set_overlay_theme("strip");
+
+        let (palette, style) = state.overlay_look(None, None);
+        assert_eq!(palette, "card");
+        assert_eq!(style, "strip");
+    }
+
+    #[test]
+    fn a_url_can_pin_one_axis_and_leave_the_other_alone() {
+        // `?theme=neon` should change the colours and keep the shape. Falling
+        // back to the default shape would undo whatever the streamer picked in
+        // the app the first time they opened a themed URL in a browser.
+        let state = yap_server::AppState::shared();
+        state.set_overlay_theme("card");
+        state.set_overlay_style("strip");
+
+        let (palette, style) = state.overlay_look(Some("neon"), None);
+        assert_eq!(palette, "neon");
+        assert_eq!(
+            style, "strip",
+            "pinning the palette must not reset the shape"
+        );
+
+        let (palette, style) = state.overlay_look(None, Some("big"));
+        assert_eq!(
+            palette, "card",
+            "pinning the shape must not reset the palette"
+        );
+        assert_eq!(style, "big");
     }
 
     #[test]
@@ -1672,8 +1767,8 @@ mod tests {
 
         assert_eq!(state.overlay_theme(None), "neon");
         assert!(
-            yap_server::overlay::themed_overlay_html(&state.overlay_theme(None))
-                .contains(r#"<body data-theme="neon">"#),
+            yap_server::overlay::overlay_html_with(&state.overlay_theme(None), None)
+                .contains(r#"data-theme="neon""#),
         );
     }
 
@@ -1686,8 +1781,8 @@ mod tests {
 
         assert_eq!(state.overlay_theme(None), "card");
         assert!(
-            yap_server::overlay::themed_overlay_html(&state.overlay_theme(None))
-                .contains(r#"<body data-theme="card">"#)
+            yap_server::overlay::overlay_html_with(&state.overlay_theme(None), None)
+                .contains(r#"data-theme="card""#)
         );
     }
 
