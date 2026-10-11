@@ -1,0 +1,168 @@
+name: Build and release yap-a-thon
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - 'v[0-9]+.[0-9]+.[0-9]+'
+
+# Pinned third-party toolchain versions. Bump these, not the steps below.
+env:
+  CUDA_VERSION: '12.8.1'
+  VULKAN_SDK_VERSION: '1.4.309.0'
+
+jobs:
+  build:
+    permissions:
+      contents: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # CPU builds: the default everyone should start with.
+          - os: ubuntu-latest
+            artifact_name: yap-a-thon-linux-x86_64
+            binary_name: yap-a-thon
+            cargo_features: ''
+            backend: cpu
+          - os: windows-latest
+            artifact_name: yap-a-thon-windows-x86_64
+            binary_name: yap-a-thon.exe
+            cargo_features: ''
+            backend: cpu
+          # GPU builds: same app, whisper compiled for the matching backend.
+          # Slow — the CUDA ones especially (nvcc builds whisper for every GPU
+          # arch, ~30-60 min). CPU results are identical, just slower at runtime.
+          - os: ubuntu-latest
+            artifact_name: yap-a-thon-linux-x86_64-cuda
+            binary_name: yap-a-thon
+            cargo_features: '--features yap-voice/whisper-cuda'
+            backend: cuda
+          - os: ubuntu-latest
+            artifact_name: yap-a-thon-linux-x86_64-vulkan
+            binary_name: yap-a-thon
+            cargo_features: '--features yap-voice/whisper-vulkan'
+            backend: vulkan
+          - os: windows-latest
+            artifact_name: yap-a-thon-windows-x86_64-cuda
+            binary_name: yap-a-thon.exe
+            cargo_features: '--features yap-voice/whisper-cuda'
+            backend: cuda
+          - os: windows-latest
+            artifact_name: yap-a-thon-windows-x86_64-vulkan
+            binary_name: yap-a-thon.exe
+            cargo_features: '--features yap-voice/whisper-vulkan'
+            backend: vulkan
+          # macOS is untested locally (no Apple toolchain here) but builds on
+          # the hosted runner with the Metal backend. Included anyway.
+          - os: macos-latest
+            artifact_name: yap-a-thon-macos-aarch64
+            binary_name: yap-a-thon
+            cargo_features: '--features yap-voice/whisper-metal'
+            backend: metal
+
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 180
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install stable Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo registry/build
+        uses: Swatinem/rust-cache@v2
+
+      # whisper-rs runs bindgen at build time (libclang), cpal needs ALSA,
+      # keyring needs dbus, and GPUI's font stack needs freetype — all
+      # system packages on Linux, none of which are vendored.
+      - name: Install Linux system dependencies
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential pkg-config \
+            libasound2-dev libdbus-1-dev libfreetype6-dev libclang-dev
+
+      # Same bindgen requirement on Windows: whisper always runs it, even for
+      # CPU-only builds. choco's LLVM is found via the standard install path.
+      - name: Install LLVM (bindgen libclang)
+        if: runner.os == 'Windows'
+        shell: bash
+        run: choco install llvm -y
+
+      # nvcc compiles fine with no GPU present; the runners only build.
+      # Slim sub-package set: full toolkit is ~4 GB / ~20 min extra.
+      # OS-agnostic — the same action installs on Linux (apt repo) and Windows.
+      - name: Install CUDA toolkit
+        if: matrix.backend == 'cuda'
+        uses: Jimver/cuda-toolkit@v0.2.21
+        with:
+          cuda: ${{ env.CUDA_VERSION }}
+          method: 'network'
+          sub-packages: '["nvcc", "cudart", "cublas", "curand"]'
+
+      # Pinned LunarG installer (Windows); bump VULKAN_SDK_VERSION at the top,
+      # not here. If LunarG renames the URL scheme this is the step that
+      # breaks — the error is loud (404) and the fix is the version string.
+      # Linux instead uses distro packages: the loader/headers plus glslc,
+      # which is what whisper's build invokes to compile its shaders.
+      - name: Install Vulkan SDK (Windows)
+        if: matrix.backend == 'vulkan' && runner.os == 'Windows'
+        shell: bash
+        run: |
+          curl -L -o /tmp/VulkanSDK.exe \
+            "https://sdk.lunarg.com/sdk/download/${VULKAN_SDK_VERSION}/windows/VulkanSDK-${VULKAN_SDK_VERSION}-Installer.exe"
+          /tmp/VulkanSDK.exe --accept-licenses --default-answer --confirm-command install
+          echo "VULKAN_SDK=C:/VulkanSDK/${VULKAN_SDK_VERSION}" >> "$GITHUB_ENV"
+          echo "C:/VulkanSDK/${VULKAN_SDK_VERSION}/Bin" >> "$GITHUB_PATH"
+
+      - name: Install Vulkan build deps (Linux)
+        if: matrix.backend == 'vulkan' && runner.os == 'Linux'
+        shell: bash
+        run: sudo apt-get install -y libvulkan-dev glslang-tools
+
+      - name: Build (release)
+        shell: bash
+        run: cargo build --release --locked -p yap-app ${{ matrix.cargo_features }}
+
+      # Downloaded-from-a-browser binaries get Gatekeeper-quarantined on macOS.
+      # Ad-hoc signing does not replace notarization, but without it the binary
+      # will not run at all; with it, right-click → Open works first launch.
+      - name: Ad-hoc codesign (macOS)
+        if: runner.os == 'macOS'
+        shell: bash
+        run: codesign --force --sign - "target/release/${{ matrix.binary_name }}"
+
+      - name: Stage bundle
+        shell: bash
+        run: |
+          mkdir -p bundle
+          cp "target/release/${{ matrix.binary_name }}" bundle/
+          cp settings.example.toml bundle/
+          cp README.md bundle/
+
+      - name: Zip bundle (for release upload, Linux/macOS)
+        if: startsWith(github.ref, 'refs/tags/') && runner.os != 'Windows'
+        shell: bash
+        run: |
+          cd bundle
+          zip -r "../${{ matrix.artifact_name }}.zip" .
+
+      - name: Zip bundle (for release upload, Windows)
+        if: startsWith(github.ref, 'refs/tags/') && runner.os == 'Windows'
+        shell: pwsh
+        run: Compress-Archive -Path bundle/* -DestinationPath "${{ matrix.artifact_name }}.zip"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact_name }}
+          path: bundle/
+
+      - name: Upload to release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: ${{ matrix.artifact_name }}.zip
