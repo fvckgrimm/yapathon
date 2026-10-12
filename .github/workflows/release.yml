@@ -67,6 +67,17 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      # whisper.cpp's nested vulkan-shaders-gen ExternalProject does a second
+      # CMake configure deep under target/. On Windows the default
+      # D:\a\...\target path plus that nesting exceeds MAX_PATH and VS18
+      # MSBuild FileTracker fails with FTK1011, breaking cl.exe TryCompile.
+      # A short target dir avoids it. Must run before the cache step so the
+      # cache sees the same dir. Linux/macOS keep the default `target`.
+      - name: Shorten target dir (Windows)
+        if: runner.os == 'Windows'
+        shell: bash
+        run: echo "CARGO_TARGET_DIR=D:/t" >> "$GITHUB_ENV"
+
       - name: Install stable Rust toolchain
         uses: dtolnay/rust-toolchain@stable
 
@@ -74,7 +85,8 @@ jobs:
         uses: Swatinem/rust-cache@v2
 
       # whisper-rs runs bindgen at build time (libclang), cpal needs ALSA,
-      # keyring needs dbus, and GPUI's font stack needs freetype — all
+      # keyring needs dbus, and GPUI's font stack needs freetype + fontconfig
+      # (yeslogic-fontconfig-sys fails on fontconfig.pc without it) — all
       # system packages on Linux, none of which are vendored.
       - name: Install Linux system dependencies
         if: runner.os == 'Linux'
@@ -83,7 +95,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y \
             build-essential pkg-config \
-            libasound2-dev libdbus-1-dev libfreetype6-dev libclang-dev
+            libasound2-dev libdbus-1-dev libfreetype6-dev libfontconfig1-dev libclang-dev
 
       # Same bindgen requirement on Windows: whisper always runs it, even for
       # CPU-only builds. choco's LLVM is found via the standard install path.
@@ -95,9 +107,12 @@ jobs:
       # nvcc compiles fine with no GPU present; the runners only build.
       # Slim sub-package set: full toolkit is ~4 GB / ~20 min extra.
       # OS-agnostic — the same action installs on Linux (apt repo) and Windows.
+      # v0.2.36+ knows CUDA 12.8.1; v0.2.21 stopped at 12.8.0 and fails with
+      # "Version not available". Bump the action, not CUDA_VERSION, for new
+      # patch releases.
       - name: Install CUDA toolkit
         if: matrix.backend == 'cuda'
-        uses: Jimver/cuda-toolkit@v0.2.21
+        uses: Jimver/cuda-toolkit@v0.2.36
         with:
           cuda: ${{ env.CUDA_VERSION }}
           method: 'network'
@@ -139,7 +154,8 @@ jobs:
         shell: bash
         run: |
           mkdir -p bundle
-          cp "target/release/${{ matrix.binary_name }}" bundle/
+          BIN_DIR="${CARGO_TARGET_DIR:-target}/release"
+          cp "$BIN_DIR/${{ matrix.binary_name }}" bundle/
           cp settings.example.toml bundle/
           cp README.md bundle/
 
