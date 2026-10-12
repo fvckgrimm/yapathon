@@ -32,7 +32,26 @@ any of it, and it is why there are as many tests as there are.
 
 ## Quickstart
 
-**1. Build it.**
+**1. Download it.** Grab the zip for your machine from
+[GitHub Releases](https://github.com/fvckgrimm/yapathon/releases) — no
+build needed. Pick by OS, then GPU:
+
+| Machine | Download |
+| --- | --- |
+| Windows + NVIDIA GPU | `yap-a-thon-windows-x86_64-cuda.zip` |
+| Windows + AMD / Intel / other GPU | `yap-a-thon-windows-x86_64-vulkan.zip` |
+| Windows, no GPU or unsure | `yap-a-thon-windows-x86_64.zip` (CPU, works everywhere, slower) |
+| Linux + NVIDIA GPU | `yap-a-thon-linux-x86_64-cuda.zip` |
+| Linux + AMD / Intel / other GPU | `yap-a-thon-linux-x86_64-vulkan.zip` |
+| Linux, no GPU or unsure | `yap-a-thon-linux-x86_64.zip` (CPU, works everywhere, slower) |
+| macOS, Apple silicon | `yap-a-thon-macos-aarch64.zip` (Metal) |
+
+CUDA builds want a current NVIDIA driver; Vulkan builds want a GPU driver
+with Vulkan support (on Linux that is usually already there with Mesa). When
+in doubt take the plain CPU zip — same app, just slower transcription. See
+[Setup](docs/setup.md#compute-backend) for what the backends mean.
+
+Or build it yourself:
 
 ```sh
 git clone <this repo> && cd yap-a-thon

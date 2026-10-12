@@ -29,7 +29,14 @@ speak. Loading a model takes a few seconds, during which the counter sits at zer
 ### Compute backend
 
 whisper.cpp selects its backend when the library is compiled, so each GPU backend
-is an opt-in build feature. A CPU build works everywhere; GPU builds are faster:
+is a separate download. From
+[GitHub Releases](https://github.com/fvckgrimm/yapathon/releases): NVIDIA takes
+the `-cuda` build, AMD / Intel / anything else takes `-vulkan`, Apple silicon
+takes the macOS build (Metal), and the plain build is CPU-only and works
+everywhere. A CPU build transcribes the same words, just slower; when in doubt,
+start there.
+
+Or build the backend yourself:
 
 ```sh
 cargo build --release --features yap-voice/whisper-cuda     # NVIDIA
