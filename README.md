@@ -13,12 +13,9 @@ OBS-specific to build, sign or maintain.
 My fucking guys [speedy](https://www.youtube.com/@KYRSP33DY) and
 [side](https://www.youtube.com/@SideArms4Reason) kept joking about running a
 yapathon on stream. I wanted to find out whether one was actually possible, and
-had no experience building anything for streams beyond archiving them. This is
-the answer: it works, and the interesting part turned out to be everything
-around it.
+had no experience building anything for streams beyond archiving them.
 
-I am a viewer, not a collaborator, and they have not asked for this — but if
-either of you ever run one, the whole thing is a binary and a settings file.
+I am a viewer, not a collaborator, and they have not asked for this.
 
 ## Built with AI
 
