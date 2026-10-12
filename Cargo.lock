@@ -9252,7 +9252,7 @@ checksum = "7a5a4b21e1a62b67a2970e6831bc091d7b87e119e7f9791aef9702e3bef04448"
 
 [[package]]
 name = "yap-app"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "async-channel",
@@ -9276,7 +9276,7 @@ dependencies = [
 
 [[package]]
 name = "yap-core"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -9292,7 +9292,7 @@ dependencies = [
 
 [[package]]
 name = "yap-events"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -9312,7 +9312,7 @@ dependencies = [
 
 [[package]]
 name = "yap-server"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "axum",
@@ -9330,7 +9330,7 @@ dependencies = [
 
 [[package]]
 name = "yap-voice"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "async-trait",
