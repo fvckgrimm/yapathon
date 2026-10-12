@@ -122,13 +122,17 @@ jobs:
       # generator maps nvcc through the CUDA MSBuild BuildCustomizations,
       # and without them enable_language(CUDA) dies with
       # "No CUDA toolset found" even though nvcc itself is present.
+      # cublas_dev/curand_dev (underscore: installer component names) ship
+      # the cublas headers and import libs; without them FindCUDAToolkit
+      # finds the toolkit but creates no CUDA::cublas target and generate
+      # fails at ggml's target_link_libraries.
       - name: Install CUDA toolkit (Windows)
         if: matrix.backend == 'cuda' && runner.os == 'Windows'
         uses: Jimver/cuda-toolkit@v0.2.36
         with:
           cuda: ${{ env.CUDA_VERSION }}
           method: 'network'
-          sub-packages: '["nvcc", "cudart", "cublas", "curand", "visual_studio_integration"]'
+          sub-packages: '["nvcc", "cudart", "cublas", "cublas_dev", "curand", "curand_dev", "visual_studio_integration"]'
 
       # CUDA 12.8's host_config.h predates the image's MSVC (19.44+), so
       # nvcc fails its own compiler-ID try-compile and CMake dies with
