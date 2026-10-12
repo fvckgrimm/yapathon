@@ -9,6 +9,11 @@ on:
 env:
   CUDA_VERSION: '12.8.1'
   VULKAN_SDK_VERSION: '1.4.309.0'
+  # Portable binaries: whisper's build script forwards GGML_* env vars to
+  # CMake, and GGML_NATIVE=OFF drops ggml-cpu from -march=native (the build
+  # runner's AVX-512, which SIGILLs older CPUs like Zen+) to an x86-64
+  # baseline. ggml still runtime-dispatches AVX2 paths where available.
+  GGML_NATIVE: 'OFF'
 
 jobs:
   build:
