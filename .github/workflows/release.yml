@@ -42,7 +42,11 @@ jobs:
             binary_name: yap-a-thon
             cargo_features: '--features yap-voice/whisper-vulkan'
             backend: vulkan
-          - os: windows-latest
+          # CUDA 12.8's nvcc predates VS18 (MSVC 14.51) on windows-latest, so
+          # enable_language(CUDA) fails with "No CUDA toolset found".
+          # windows-2022 has VS17 which 12.8 supports. Revisit when bumping
+          # CUDA_VERSION to 13.x.
+          - os: windows-2022
             artifact_name: yap-a-thon-windows-x86_64-cuda
             binary_name: yap-a-thon.exe
             cargo_features: '--features yap-voice/whisper-cuda'
@@ -110,13 +114,18 @@ jobs:
       # v0.2.36+ knows CUDA 12.8.1; v0.2.21 stopped at 12.8.0 and fails with
       # "Version not available". Bump the action, not CUDA_VERSION, for new
       # patch releases.
+      # Linux apt names are NOT all cuda-*: cublas/curand ship as
+      # libcublas(-dev)/libcurand(-dev), so those go in non-cuda-sub-packages
+      # (Linux network-only; ignored on Windows). -dev variants are needed
+      # for headers and .so links at whisper link time.
       - name: Install CUDA toolkit
         if: matrix.backend == 'cuda'
         uses: Jimver/cuda-toolkit@v0.2.36
         with:
           cuda: ${{ env.CUDA_VERSION }}
           method: 'network'
-          sub-packages: '["nvcc", "cudart", "cublas", "curand"]'
+          sub-packages: '["nvcc", "cudart", "cudart-dev"]'
+          non-cuda-sub-packages: '["libcublas", "libcublas-dev", "libcurand", "libcurand-dev"]'
 
       # Pinned LunarG installer (Windows); bump VULKAN_SDK_VERSION at the top,
       # not here. If LunarG renames the URL scheme this is the step that
@@ -136,7 +145,10 @@ jobs:
       - name: Install Vulkan build deps (Linux)
         if: matrix.backend == 'vulkan' && runner.os == 'Linux'
         shell: bash
-        run: sudo apt-get install -y libvulkan-dev glslang-tools
+        # FindVulkan requires the glslc binary, which ships in `shaderc`, not
+        # glslang-tools (that only has glslangValidator). Without it configure
+        # fails with "Could NOT find Vulkan (missing: glslc)".
+        run: sudo apt-get install -y libvulkan-dev glslang-tools shaderc
 
       - name: Build (release)
         shell: bash
