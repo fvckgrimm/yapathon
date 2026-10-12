@@ -99,7 +99,8 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y \
             build-essential pkg-config \
-            libasound2-dev libdbus-1-dev libfreetype6-dev libfontconfig1-dev libclang-dev
+            libasound2-dev libdbus-1-dev libfreetype6-dev libfontconfig1-dev libclang-dev \
+            libxcb1-dev libxkbcommon-dev libxkbcommon-x11-dev
 
       # Same bindgen requirement on Windows: whisper always runs it, even for
       # CPU-only builds. choco's LLVM is found via the standard install path.
@@ -110,22 +111,41 @@ jobs:
 
       # nvcc compiles fine with no GPU present; the runners only build.
       # Slim sub-package set: full toolkit is ~4 GB / ~20 min extra.
-      # OS-agnostic — the same action installs on Linux (apt repo) and Windows.
       # v0.2.36+ knows CUDA 12.8.1; v0.2.21 stopped at 12.8.0 and fails with
       # "Version not available". Bump the action, not CUDA_VERSION, for new
       # patch releases.
-      # Linux apt names are NOT all cuda-*: cublas/curand ship as
-      # libcublas(-dev)/libcurand(-dev), so those go in non-cuda-sub-packages
-      # (Linux network-only; ignored on Windows). -dev variants are needed
-      # for headers and .so links at whisper link time.
-      - name: Install CUDA toolkit
-        if: matrix.backend == 'cuda'
+      # Windows and Linux need different package names (installer components
+      # vs apt), so the installs are separate steps. The Windows list is the
+      # proven one: names pass through verbatim as <name>_12.8 and anything
+      # else (e.g. cudart-dev with a hyphen) fails the installer.
+      - name: Install CUDA toolkit (Windows)
+        if: matrix.backend == 'cuda' && runner.os == 'Windows'
         uses: Jimver/cuda-toolkit@v0.2.36
         with:
           cuda: ${{ env.CUDA_VERSION }}
           method: 'network'
-          sub-packages: '["nvcc", "cudart", "cudart-dev"]'
-          non-cuda-sub-packages: '["libcublas", "libcublas-dev", "libcurand", "libcurand-dev"]'
+          sub-packages: '["nvcc", "cudart", "cublas", "curand"]'
+
+      # Same repo setup the action does (keyring + pin + repo), then exact
+      # apt names verified against NVIDIA's Packages index: cublas/curand
+      # ship as libcublas(-dev)/libcurand(-dev), and whisper needs the -dev
+      # variants for headers and .so links at build time.
+      - name: Install CUDA toolkit (Linux)
+        if: matrix.backend == 'cuda' && runner.os == 'Linux'
+        shell: bash
+        run: |
+          UBUNTU_VERSION="$(lsb_release -sr | tr -d .)"
+          CUDA_MM="$(echo "$CUDA_VERSION" | cut -d. -f1,2 | tr . -)"
+          wget "https://developer.download.nvidia.com/compute/cuda/repos/ubuntu${UBUNTU_VERSION}/x86_64/cuda-keyring_1.1-1_all.deb" -O /tmp/cuda-keyring.deb
+          sudo dpkg -i /tmp/cuda-keyring.deb
+          wget "https://developer.download.nvidia.com/compute/cuda/repos/ubuntu${UBUNTU_VERSION}/x86_64/cuda-ubuntu${UBUNTU_VERSION}.pin" -O /tmp/cuda.pin
+          sudo mv /tmp/cuda.pin /etc/apt/preferences.d/cuda-repository-pin-600
+          sudo add-apt-repository "deb http://developer.download.nvidia.com/compute/cuda/repos/ubuntu${UBUNTU_VERSION}/x86_64/ /"
+          sudo apt-get update
+          sudo apt-get install -y \
+            "cuda-nvcc-${CUDA_MM}" "cuda-cudart-${CUDA_MM}" "cuda-cudart-dev-${CUDA_MM}" \
+            "libcublas-${CUDA_MM}" "libcublas-dev-${CUDA_MM}" \
+            "libcurand-${CUDA_MM}" "libcurand-dev-${CUDA_MM}"
 
       # Pinned LunarG installer (Windows); bump VULKAN_SDK_VERSION at the top,
       # not here. If LunarG renames the URL scheme this is the step that
@@ -145,10 +165,11 @@ jobs:
       - name: Install Vulkan build deps (Linux)
         if: matrix.backend == 'vulkan' && runner.os == 'Linux'
         shell: bash
-        # FindVulkan requires the glslc binary, which ships in `shaderc`, not
-        # glslang-tools (that only has glslangValidator). Without it configure
-        # fails with "Could NOT find Vulkan (missing: glslc)".
-        run: sudo apt-get install -y libvulkan-dev glslang-tools shaderc
+        # FindVulkan requires the glslc binary, which ships in the `glslc`
+        # package (source: shaderc), not glslang-tools (glslangValidator
+        # only). Without it configure fails with
+        # "Could NOT find Vulkan (missing: glslc)".
+        run: sudo apt-get install -y libvulkan-dev glslang-tools glslc
 
       - name: Build (release)
         shell: bash
