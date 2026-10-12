@@ -126,6 +126,16 @@ jobs:
           method: 'network'
           sub-packages: '["nvcc", "cudart", "cublas", "curand"]'
 
+      # CUDA 12.8's host_config.h predates the image's MSVC (19.44+), so
+      # nvcc fails its own compiler-ID try-compile and CMake dies with
+      # "No CUDA toolset found" even though the toolkit is installed.
+      # NVCC_PREPEND_FLAGS is read by nvcc itself on every invocation
+      # (no CMake/build.rs involvement), so this covers configure and build.
+      - name: Allow newer MSVC with CUDA 12.8 (Windows)
+        if: matrix.backend == 'cuda' && runner.os == 'Windows'
+        shell: bash
+        run: echo "NVCC_PREPEND_FLAGS=-allow-unsupported-compiler" >> "$GITHUB_ENV"
+
       # Same repo setup the action does (keyring + pin + repo), then exact
       # apt names verified against NVIDIA's Packages index: cublas/curand
       # ship as libcublas(-dev)/libcurand(-dev), and whisper needs the -dev
@@ -146,6 +156,15 @@ jobs:
             "cuda-nvcc-${CUDA_MM}" "cuda-cudart-${CUDA_MM}" "cuda-cudart-dev-${CUDA_MM}" \
             "libcublas-${CUDA_MM}" "libcublas-dev-${CUDA_MM}" \
             "libcurand-${CUDA_MM}" "libcurand-dev-${CUDA_MM}"
+          # The debs install to /usr/local/cuda-<major.minor> with no `cuda`
+          # symlink and nothing on PATH, so CMake's enable_language(CUDA)
+          # fails with "No CMAKE_CUDA_COMPILER could be found" and whisper's
+          # build script (which hardcodes link-search /usr/local/cuda/lib64)
+          # can't link. The Jimver action used to provide all three.
+          CUDA_DIR="/usr/local/cuda-$(echo "$CUDA_VERSION" | cut -d. -f1,2)"
+          sudo ln -sfn "$CUDA_DIR" /usr/local/cuda
+          echo "/usr/local/cuda/bin" >> "$GITHUB_PATH"
+          echo "CUDACXX=/usr/local/cuda/bin/nvcc" >> "$GITHUB_ENV"
 
       # Pinned LunarG installer (Windows); bump VULKAN_SDK_VERSION at the top,
       # not here. If LunarG renames the URL scheme this is the step that
