@@ -118,13 +118,17 @@ jobs:
       # vs apt), so the installs are separate steps. The Windows list is the
       # proven one: names pass through verbatim as <name>_12.8 and anything
       # else (e.g. cudart-dev with a hyphen) fails the installer.
+      # visual_studio_integration is required: CMake's Visual Studio
+      # generator maps nvcc through the CUDA MSBuild BuildCustomizations,
+      # and without them enable_language(CUDA) dies with
+      # "No CUDA toolset found" even though nvcc itself is present.
       - name: Install CUDA toolkit (Windows)
         if: matrix.backend == 'cuda' && runner.os == 'Windows'
         uses: Jimver/cuda-toolkit@v0.2.36
         with:
           cuda: ${{ env.CUDA_VERSION }}
           method: 'network'
-          sub-packages: '["nvcc", "cudart", "cublas", "curand"]'
+          sub-packages: '["nvcc", "cudart", "cublas", "curand", "visual_studio_integration"]'
 
       # CUDA 12.8's host_config.h predates the image's MSVC (19.44+), so
       # nvcc fails its own compiler-ID try-compile and CMake dies with
