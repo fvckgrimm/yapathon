@@ -1,7 +1,7 @@
 # yap-a-thon
 
 A yapathon counter for OBS. Say words. Chat adds words. The run ends when you
-reach the goal or hit the hard limit, whichever comes first.
+reach the goal or hit the hard limit, whichever comes first. Subathon for Yappers.
 
 GPUI desktop app, not an OBS plugin. The app serves two pages on loopback — a
 control dock and an on-stream overlay — and OBS loads them as a Custom Dock and
