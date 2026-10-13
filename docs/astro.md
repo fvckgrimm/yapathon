@@ -49,9 +49,11 @@ native cannot cover.
 ### Testing it without viewers
 
 Flip on **Test Mode** in Setup → it counts simulated events so you can check
-the whole chain end to end without waiting for a raid. Then fire test events
-from StreamElements' widget simulator (overlay editor: Designer → Simulate) and
-watch the goal move.
+the whole chain end to end without waiting for a raid. Then either fire test
+events from StreamElements' widget simulator (overlay editor: Designer →
+Simulate), or tap a preset fake (sub, cheer, raid, Super Chat, !yap) right
+there under the switch — same priced event, no second app to drive. Watch the
+goal move on Live.
 
 StreamElements' widget simulator produces test events. Counting those would let a
 cheer nobody sent move the goal, so they are normally dropped.

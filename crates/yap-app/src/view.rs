@@ -1210,6 +1210,7 @@ impl YapView {
             .child(self.render_header(model, cx))
             .child(self.render_stats(model, cx))
             .child(self.render_test_mode_banner(cx))
+            .child(self.render_fake_buttons(cx))
             .child(self.render_notices(model, cx))
             .child(self.render_setup_nudge(model, cx))
             .child(self.render_start_form(model, cx))
@@ -1415,13 +1416,81 @@ impl YapView {
                     .text_size(LABEL)
                     .text_color(Theme::muted(cx))
                     .child(if on {
-                        "ON — fakes count. In StreamElements, open the simulator \
-                         (overlay editor: Designer → Simulate) and fire a test cheer \
-                         or sub. Fakes show as (mock). Turn this OFF before the real stream."
+                        "ON — fakes count. Fire one below, or use the StreamElements \
+                         simulator (overlay editor: Designer → Simulate). Everything \
+                         fake shows as (mock). Turn this OFF before the real stream."
                     } else {
-                        "Flip this on, fire a test cheer or sub from StreamElements, \
+                        "Flip this on, fire a test cheer or sub, \
                          and watch the goal move. Nothing fake counts while this is off."
                     }),
+            )
+            .child(self.render_fake_buttons(cx))
+            .into_any_element()
+    }
+
+    /// One-tap fake events, shown wherever Test Mode is on.
+    ///
+    /// The StreamElements simulator is the real way to test, but it is a whole
+    /// second app to drive. These fire the same priced event a simulator frame
+    /// would have produced. Each button says what it grants right now — priced
+    /// from the settings panel's live value, so an unpriced fake reads "off"
+    /// instead of silently doing nothing.
+    fn render_fake_buttons(&self, cx: &mut App) -> impl IntoElement {
+        if !yap_events::astro::mock_events_allowed() {
+            return div().into_any_element();
+        }
+
+        div()
+            .flex()
+            .flex_col()
+            .gap_1()
+            .child(
+                div()
+                    .text_size(LABEL)
+                    .text_color(Theme::muted(cx))
+                    .child("Tap to fire a fake — all clearly marked (mock):"),
+            )
+            .child(
+                div()
+                    .flex()
+                    .flex_wrap()
+                    .gap_2()
+                    .children(
+                        crate::session::FAKE_PRESETS.iter().map(|preset| {
+                            // Priced here so the label always matches what
+                            // firing grants; re-read at click time so an edit
+                            // between render and click is honoured.
+                            let value = self
+                                .settings
+                                .as_ref()
+                                .map(|panel| panel.read(cx).model_value(preset.field))
+                                .unwrap_or_default();
+                            let grants = crate::session::fake_event(preset, &value).words;
+                            let label = match grants {
+                                Some(words) => format!("{} +{words}", preset.label),
+                                None => format!("{} · off", preset.label),
+                            };
+
+                            let session = self.session.clone();
+                            let me = self.me.clone();
+                            Button::new(format!("fake-{}", preset.field))
+                                .label(label)
+                                .on_click(move |_, _, cx| {
+                                    let event = me.update(cx, |this, cx| {
+                                        let value = this
+                                            .settings
+                                            .as_ref()
+                                            .map(|panel| panel.read(cx).model_value(preset.field))
+                                            .unwrap_or_default();
+                                        crate::session::fake_event(preset, &value)
+                                    });
+                                    if let Ok(event) = event {
+                                        command(&session, cx, Command::Fake(event));
+                                    }
+                                })
+                                .into_any_element()
+                        }),
+                    ),
             )
             .into_any_element()
     }
@@ -1804,6 +1873,8 @@ pub enum Command {
         words: i64,
         note: String,
     },
+    /// A Test Mode fake, already priced and labelled `(mock)`.
+    Fake(yap_core::goal::Event),
 }
 
 impl Command {
@@ -1819,6 +1890,7 @@ impl Command {
             Command::Undo => "undo",
             Command::End => "end",
             Command::Adjust { .. } => "adjust",
+            Command::Fake(_) => "fake",
         }
     }
 }
@@ -1849,6 +1921,12 @@ fn command(session: &Entity<SessionEntity>, cx: &mut gpui::App, what: Command) {
             Command::End => crate::session::end(&state).await,
             Command::Adjust { words, ref note } => {
                 crate::session::adjust(&state, words, note).await
+            }
+            // A fake cannot fail: with no session it grants nothing, which the
+            // feed shows as "off" rather than an error worth logging.
+            Command::Fake(event) => {
+                crate::session::apply_event(&state, event).await;
+                Ok(())
             }
         };
 
@@ -2094,6 +2172,31 @@ mod tests {
         }
     }
 
+    /// Holds the process-wide Test Mode flag for one test.
+    ///
+    /// Two UI tests flip it through real clicks, and the default test runner
+    /// runs them on neighbouring threads — without this, one test's switch
+    /// lands in the other's assertions. The guard restores the previous value
+    /// on drop (even on panic), and a poisoned lock is recovered rather than
+    /// failing every test after the one that panicked.
+    fn hold_test_mode() -> impl Drop {
+        static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+        struct Guard {
+            _lock: std::sync::MutexGuard<'static, ()>,
+            was: bool,
+        }
+        impl Drop for Guard {
+            fn drop(&mut self) {
+                yap_events::astro::set_mock_events_allowed(self.was);
+            }
+        }
+
+        let lock = LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        let was = yap_events::astro::mock_events_allowed();
+        Guard { _lock: lock, was }
+    }
+
     /// Stand the real window up in a headless one.
     ///
     /// `YapView` needs a session entity, which needs a shared state and a message
@@ -2205,13 +2308,7 @@ mod tests {
         use gpui_kit::test::TestWindowExt as _;
 
         // The flag is process-wide; restore it so no later test inherits it.
-        struct Restore(bool);
-        impl Drop for Restore {
-            fn drop(&mut self) {
-                yap_events::astro::set_mock_events_allowed(self.0);
-            }
-        }
-        let _restore = Restore(yap_events::astro::mock_events_allowed());
+        let _guard = hold_test_mode();
         yap_events::astro::set_mock_events_allowed(false);
 
         let (root, cx) = open_window!(cx);
@@ -2361,6 +2458,50 @@ mod tests {
             section, 0,
             "closing it while on Advanced must fall back rather than strand the panel",
         );
+    }
+
+    #[gpui_kit::test]
+    fn fake_event_buttons_appear_only_in_test_mode(cx: &mut gpui_kit::TestAppContext) {
+        // The presets are the whole point of Test Mode for a normie: no second
+        // app to drive. They must exist exactly when fakes count — a button
+        // that fires while Test Mode is off would count a "fake" nobody asked
+        // to count.
+        use gpui_kit::test::TestWindowExt as _;
+
+        let _guard = hold_test_mode();
+        yap_events::astro::set_mock_events_allowed(false);
+
+        let (_root, cx) = open_window!(cx);
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        cx.update(|window, cx| window.click("nav-Setup", cx));
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+
+        assert!(
+            cx.update(|window, _| window.try_find("fake-event_twitch_sub").is_none()),
+            "no fake buttons while Test Mode is off",
+        );
+
+        cx.update(|window, cx| window.click("test-mode-switch", cx));
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+
+        assert!(
+            cx.update(|window, _| window.try_find("fake-event_twitch_sub").is_some()),
+            "flipping Test Mode on must reveal the fakes on Setup",
+        );
+
+        // And where the counter is, too — that is where they get watched.
+        cx.update(|window, cx| window.click("nav-Live", cx));
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+
+        assert!(
+            cx.update(|window, _| window.try_find("fake-event_twitch_cheer").is_some()),
+            "flipping Test Mode on must reveal the fakes on Live",
+        );
+
+        // Firing one must not blow up with no session running; what it grants
+        // is pinned by the session unit tests instead.
+        cx.update(|window, cx| window.click("fake-event_twitch_sub", cx));
+        cx.update(|window, cx| window.draw(cx).clear(cx));
     }
 
     #[gpui_kit::test]
