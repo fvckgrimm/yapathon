@@ -265,6 +265,21 @@ enum MicProbe {
 /// Goal presets so nobody has to invent a number.
 const GOAL_PRESETS: [(u32, &str); 3] = [(1_000, "Quick · 1k"), (5_000, "Normal · 5k"), (10_000, "Marathon · 10k")];
 
+/// What model Setup reports: the saved settings (what the engine will load),
+/// not the folder scan alone.
+///
+/// Read-only: [`yap_core::settings::load_raw`] parses without repairing, so
+/// rendering never rewrites anything. `locate_settings_in` rather than
+/// `locate_settings` because the latter logs every call and this runs on
+/// every render.
+fn saved_model_status() -> yap_core::settings::ModelStatus {
+    let candidates = yap_core::settings::settings_candidates();
+    let source = yap_core::settings::locate_settings_in(&candidates);
+    let saved = yap_core::settings::load_raw(&source.path).unwrap_or_default();
+    let discovered = yap_core::settings::discover_models();
+    yap_core::settings::model_status(&saved, &discovered)
+}
+
 impl YapView {
     pub fn new(
         session: Entity<SessionEntity>,
@@ -1223,8 +1238,10 @@ impl YapView {
 
     /// One-line nudge toward Setup when the voice model is missing.
     fn render_setup_nudge(&self, _model: &SessionModel, cx: &mut App) -> impl IntoElement {
-        let found = yap_core::settings::discover_models();
-        if !found.is_empty() {
+        if !matches!(
+            saved_model_status(),
+            yap_core::settings::ModelStatus::Missing
+        ) {
             return div().into_any_element();
         }
 
@@ -1265,15 +1282,31 @@ impl YapView {
     /// No reading required — every red row tells you what to press.
     fn render_setup(&self, cx: &mut App) -> impl IntoElement {
         let me = self.me.clone();
-        let models = yap_core::settings::discover_models();
-        let model_ok = !models.is_empty();
-        let model_line = if model_ok {
-            format!("Found {} — you're good", models[0].name())
-        } else {
-            format!(
-                "None found in {} — pick one below",
-                yap_core::settings::models_dir().display()
-            )
+        // The saved settings, not the folder scan: a model browsed from
+        // Downloads is usable and the engine loads it, so the card must say
+        // so instead of "none found".
+        let (model_ok, model_line) = match saved_model_status() {
+            yap_core::settings::ModelStatus::Configured(path) => (
+                true,
+                format!(
+                    "Using {} — you're good",
+                    yap_core::settings::model_display_name(&path)
+                ),
+            ),
+            yap_core::settings::ModelStatus::Discovered(found) => {
+                (true, format!("Found {} — you're good", found.name()))
+            }
+            yap_core::settings::ModelStatus::Cloud => (
+                true,
+                "Cloud engine — no local model needed".to_string(),
+            ),
+            yap_core::settings::ModelStatus::Missing => (
+                false,
+                format!(
+                    "None found in {} — pick one below",
+                    yap_core::settings::models_dir().display()
+                ),
+            ),
         };
 
         let mic_list = crate::settings_view::input_devices();

@@ -340,6 +340,27 @@ pub struct SettingsView {
     browse_task: Option<Task<()>>,
 }
 
+/// The configured path as its own picker row, when discovery does not list it.
+///
+/// A free function because it reads nothing but its arguments, and a free
+/// function is testable without building a panel — the same reason
+/// [`model_path_is_usable`] is one. Without this row a model browsed from
+/// outside the discovery folders reads as unselected even though the engine
+/// will load it.
+fn custom_model_choice(
+    current: &str,
+    found: &[yap_core::settings::FoundModel],
+) -> Option<std::path::PathBuf> {
+    let canonical = std::path::Path::new(current).canonicalize().ok()?;
+    if !canonical.is_file() {
+        return None;
+    }
+    if found.iter().any(|model| model.path == canonical) {
+        return None;
+    }
+    Some(canonical)
+}
+
 /// Put the parts of a save that can take effect now, into effect now.
 ///
 /// Whether this path is a model file the recogniser could actually open.
@@ -703,11 +724,33 @@ impl SettingsView {
         cx: &mut App,
     ) -> Option<gpui::AnyElement> {
         let found = yap_core::settings::discover_models();
+        let current = self.settings.get("model_path").to_string();
+        let custom = custom_model_choice(&current, &found);
 
         let body = div()
             .flex()
             .flex_col()
             .gap_1()
+            .children(custom.iter().map(|path| {
+                let display = path.display().to_string();
+                let label = format!(
+                    "{}  (custom location)",
+                    yap_core::settings::model_display_name(path)
+                );
+                let me = me.clone();
+
+                segment_button(
+                    SharedId::custom_model(),
+                    label,
+                    true,
+                    move |_window, cx| {
+                        let _ = me.update(cx, |this, _cx| {
+                            this.settings.set("model_path", display.clone())
+                        });
+                    },
+                )
+                .into_any_element()
+            }))
             .children(found.iter().map(|model| {
                 let selected = self.settings.get("model_path") == model.path.display().to_string();
                 let path = model.path.display().to_string();
@@ -1726,6 +1769,14 @@ impl SharedId {
 
     fn model(name: &str) -> gpui::ElementId {
         format!("settings-model-{name}").into()
+    }
+
+    /// The row for a model chosen from outside the discovery folders.
+    ///
+    /// Public and stable for the same reason as the chooser button: a test
+    /// looking for it is how we know a browsed model reads as selected.
+    pub fn custom_model() -> gpui::ElementId {
+        "settings-model-custom".into()
     }
 
     /// The button that opens the credential prompt.
@@ -2796,6 +2847,71 @@ mod tests {
         };
 
         assert_eq!(model_warning(&settings), None);
+    }
+
+    #[test]
+    fn a_browsed_model_gets_its_own_picker_row() {
+        // A model chosen from outside the discovery folders is usable and
+        // unlisted, which is exactly when the picker needs a row for it —
+        // otherwise the choice reads as unselected.
+        let dir = std::env::temp_dir().join("yap-custom-row-downloads");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        let model = dir.join("ggml-medium.en.bin");
+        std::fs::write(&model, b"not really a model").expect("write");
+
+        let canonical = model.canonicalize().expect("exists");
+
+        assert_eq!(
+            custom_model_choice(&model.display().to_string(), &[]),
+            Some(canonical)
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_listed_model_needs_no_custom_row() {
+        // Discovery already renders this one; a second row would be the same
+        // file twice under two ids.
+        let dir = std::env::temp_dir().join("yap-custom-row-models");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        let model = dir.join("ggml-small.en.bin");
+        std::fs::write(&model, b"not really a model").expect("write");
+        let canonical = model.canonicalize().expect("exists");
+        let found = vec![yap_core::settings::FoundModel {
+            path: canonical,
+            size_bytes: 1,
+        }];
+
+        assert_eq!(
+            custom_model_choice(&model.display().to_string(), &found),
+            None
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_missing_path_gets_no_custom_row() {
+        // Nothing on disk means nothing to offer: the empty-list message and
+        // the Browse button cover this case.
+        assert_eq!(
+            custom_model_choice("/nope/missing.bin", &[]),
+            None,
+            "a missing path must not get a row"
+        );
+        assert_eq!(
+            custom_model_choice("", &[]),
+            None,
+            "an empty field must not get a row"
+        );
+        assert_eq!(
+            custom_model_choice(&std::env::temp_dir().display().to_string(), &[]),
+            None,
+            "a directory is not a model file"
+        );
     }
 
     #[test]

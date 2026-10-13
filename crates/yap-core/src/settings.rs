@@ -343,10 +343,7 @@ impl FoundModel {
     /// Full paths in a dropdown are unreadable past the home directory, and the
     /// file name is the part that says which model it is.
     pub fn name(&self) -> String {
-        self.path
-            .file_name()
-            .map(|n| n.to_string_lossy().to_string())
-            .unwrap_or_else(|| self.path.display().to_string())
+        model_display_name(&self.path)
     }
 
     /// A human-readable size, so a 466 MB model and a 1.6 GB one are told apart
@@ -474,6 +471,60 @@ pub fn discover_model_or_default(configured: &Path) -> PathBuf {
     }
 
     configured.to_path_buf()
+}
+
+/// Just the file name, which is what a person recognises.
+///
+/// Full paths in a picker are unreadable past the home directory, and the
+/// file name is the part that says which model it is.
+pub fn model_display_name(path: &Path) -> String {
+    path.file_name()
+        .map(|n| n.to_string_lossy().to_string())
+        .unwrap_or_else(|| path.display().to_string())
+}
+
+/// What model the engine will actually load, for screens that report it.
+///
+/// The Setup checklist and the first-run nudge used to look only at
+/// `discover_models()`: a model chosen from anywhere else — Downloads, a
+/// second drive, another tool's folder — read as "no model", and a cloud
+/// engine (which needs no local model at all) read the same way. Both are
+/// answers about the saved configuration, not about the folder scan.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ModelStatus {
+    /// A local engine pointing at a file that exists. Used as-is.
+    Configured(PathBuf),
+    /// A local engine pointing at nothing on disk, with a discovered model
+    /// the loader will substitute — the same fallback
+    /// [`repair_model_path_reporting`] applies.
+    Discovered(FoundModel),
+    /// A cloud engine: there is no local file to be wrong about.
+    Cloud,
+    /// A local engine with nothing configured and nothing on disk.
+    Missing,
+}
+
+/// [`ModelStatus`] for saved settings and one folder scan.
+///
+/// Pure so it is testable without depending on whatever models happen to
+/// exist on the machine running the tests.
+pub fn model_status(saved: &Settings, discovered: &[FoundModel]) -> ModelStatus {
+    let EngineChoice::Local { model_path, .. } = &saved.engine else {
+        return ModelStatus::Cloud;
+    };
+
+    if model_path.is_file() {
+        return ModelStatus::Configured(model_path.clone());
+    }
+
+    match discovered
+        .iter()
+        .find(|m| m.path == *model_path)
+        .or_else(|| discovered.first())
+    {
+        Some(found) => ModelStatus::Discovered(found.clone()),
+        None => ModelStatus::Missing,
+    }
 }
 
 /// Load settings from `path`, falling back to defaults if absent.
@@ -1396,5 +1447,76 @@ mod tests {
         assert!(cloud.is_remote());
         assert_eq!(cloud.cost_per_hour_usd(), Some(0.04));
         assert_eq!(local.cost_per_hour_usd(), None);
+    }
+
+    fn local_settings_with(model_path: PathBuf) -> Settings {
+        Settings {
+            engine: EngineChoice::Local {
+                model_path,
+                backend: LocalBackend::Cpu,
+            },
+            ..Settings::default()
+        }
+    }
+
+    #[test]
+    fn a_usable_path_counts_wherever_it_lives() {
+        // A model browsed from Downloads is not in the discovery folders, and
+        // the Setup screen must still report it as ready.
+        let downloads = std::env::temp_dir().join("yap-status-downloads");
+        let _ = std::fs::remove_dir_all(&downloads);
+        std::fs::create_dir_all(&downloads).expect("temp dir");
+        let model = downloads.join("ggml-medium.en.bin");
+        std::fs::write(&model, b"not really a model").expect("write");
+
+        let status = super::model_status(&local_settings_with(model.clone()), &[]);
+
+        assert_eq!(status, super::ModelStatus::Configured(model));
+
+        let _ = std::fs::remove_dir_all(&downloads);
+    }
+
+    #[test]
+    fn a_missing_path_falls_back_to_a_discovered_model() {
+        // Mirrors what the loader does: the configured path is gone, but
+        // there is something on disk, so the setup reads as ready.
+        let found = FoundModel {
+            path: PathBuf::from("/models/ggml-small.en.bin"),
+            size_bytes: 1,
+        };
+        let settings =
+            local_settings_with(PathBuf::from("/models/does-not-exist.bin"));
+
+        let status = super::model_status(&settings, std::slice::from_ref(&found));
+
+        assert_eq!(status, super::ModelStatus::Discovered(found));
+    }
+
+    #[test]
+    fn nothing_configured_and_nothing_found_is_missing() {
+        let settings =
+            local_settings_with(PathBuf::from("/models/does-not-exist.bin"));
+
+        assert_eq!(
+            super::model_status(&settings, &[]),
+            super::ModelStatus::Missing
+        );
+    }
+
+    #[test]
+    fn a_cloud_engine_needs_no_local_model() {
+        // No local file to be wrong about, so an empty models folder is not a
+        // problem to report.
+        let settings = Settings {
+            engine: EngineChoice::Groq {
+                credential: "yap-a-thon/groq".to_string(),
+            },
+            ..Settings::default()
+        };
+
+        assert_eq!(
+            super::model_status(&settings, &[]),
+            super::ModelStatus::Cloud
+        );
     }
 }
